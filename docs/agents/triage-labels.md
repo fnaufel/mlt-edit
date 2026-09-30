@@ -1,0 +1,11 @@
+# Triage labels
+
+| Role | GitHub label |
+| --- | --- |
+| `needs-triage` | `needs-triage` |
+| `needs-info` | `needs-info` |
+| `ready-for-agent` | `ready-for-agent` |
+| `ready-for-human` | `ready-for-human` |
+| `wontfix` | `wontfix` |
+
+Use the GitHub label in the right column whenever an engineering skill names a role in the left column.
