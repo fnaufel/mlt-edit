@@ -1,0 +1,46 @@
+# Marker-to-edit semantics.
+#
+# Change the media profile/FPS to match the OBS recording.
+# Common MLT profiles include atsc_1080p_30, atsc_1080p_60,
+# atsc_1080p_2997, and atsc_1080p_5994.
+
+[media]
+mlt_profile = "atsc_1080p_30"
+fps_num = 30
+fps_den = 1
+
+[csv]
+timestamp_column = "Recording Timestamp on File"
+end_timestamp_column = "Recording End Mark Timestamp on File"
+path_column = "Recording Full Path"
+comment_column = "Comment"
+
+[behavior]
+# The portion after the last edit-boundary marker is not included.
+tail = "discard"
+
+[markers.KEEP_CUT]
+kind = "boundary"
+keep = true
+join = "cut"
+
+[markers.KEEP_TRANSITION]
+kind = "boundary"
+keep = true
+join = "dissolve"
+
+[markers.DELETE]
+kind = "boundary"
+keep = false
+
+# These are normalized into annotations in the plan.
+# The first MLT backend intentionally does not render them yet.
+
+[markers.TITLE]
+kind = "point"
+effect = "title"
+default_duration = 5
+
+[markers.IMPORTANT]
+kind = "range"
+role = "important"
