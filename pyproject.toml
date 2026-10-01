@@ -1,0 +1,15 @@
+[project]
+name = "mlt-edit"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = []
+
+[tool.mypy]
+python_version = "3.11"
+files = ["obs_csv_to_mlt.py", "tests"]
+check_untyped_defs = true
+
+[dependency-groups]
+dev = [
+    "mypy>=2.3.1",
+]
