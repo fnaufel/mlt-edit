@@ -109,19 +109,23 @@ def load_plan(path: Path) -> tuple[Path, list[Segment], Path | None, int | None]
 
     if not any(segment.keep for segment in segments):
         raise PlanError("plan has no kept segments; there is no project to generate")
-    transitions = [index for index, segment in enumerate(segments) if segment.join_after == "dissolve"]
-    if len(transitions) > 1:
-        raise PlanError("multiple transitions and transition chains are not supported yet")
-    if transitions:
-        index = transitions[0]
-        if index == len(segments) - 1:
-            raise PlanError(f"segment {index + 1} has a terminal transition without a following kept segment")
-        if not segments[index + 1].keep:
-            raise PlanError(f"segment {index + 1} transition across discarded footage is not supported yet")
-        duration = segments[index].transition_duration
+    kept = [(number, segment) for number, segment in enumerate(segments, 1) if segment.keep]
+    for index, (number, segment) in enumerate(kept):
+        if segment.join_after != "dissolve":
+            continue
+        if index == len(kept) - 1:
+            detail = "terminal transition" if number == len(segments) else "transition"
+            raise PlanError(f"segment {number} has a {detail} without a following kept segment")
+        duration = segment.transition_duration
         assert duration is not None
-        if duration > segments[index].end - segments[index].start or duration > segments[index + 1].end - segments[index + 1].start:
-            raise PlanError(f"segment {index + 1} transition_duration needs more footage than an adjacent kept segment provides")
+        next_segment = kept[index + 1][1]
+        if duration > segment.end - segment.start or duration > next_segment.end - next_segment.start:
+            raise PlanError(f"segment {number} transition_duration needs more footage than an adjacent kept segment provides")
+        if index > 0:
+            previous = kept[index - 1][1]
+            incoming = previous.transition_duration if previous.join_after == "dissolve" else None
+            if incoming is not None and incoming + duration > segment.end - segment.start:
+                raise PlanError(f"segment {number} combined overlap exceeds the shared kept segment")
 
     audio_index = data.get("audio_stream")
     if audio_index is not None and (type(audio_index) is not int or audio_index < 0):
@@ -307,8 +311,22 @@ def project_xml(segments: list[Segment], recording: Recording, external_audio: E
             raise PlanError(f"kept segment {number} ends beyond audio_file duration ({external_audio.duration} seconds)")
         kept.append((number, segment, start, end))
 
-    transition = next((index for index, (_, segment, _, _) in enumerate(kept) if segment.join_after == "dissolve"), None)
-    if transition is None:
+    overlaps = [0] * (len(kept) - 1)
+    for index, (number, segment, start, end) in enumerate(kept[:-1]):
+        if segment.join_after != "dissolve":
+            continue
+        duration = segment.transition_duration
+        assert duration is not None
+        overlap = frame_at(duration, recording.frame_rate)
+        next_start, next_end = kept[index + 1][2:]
+        if overlap < 1 or overlap > min(end - start, next_end - next_start):
+            raise PlanError(f"segment {number} transition_duration needs at least one frame and cannot exceed either adjacent segment")
+        overlaps[index] = overlap
+    for index, (number, _, start, end) in enumerate(kept[1:-1], 1):
+        if overlaps[index - 1] + overlaps[index] > end - start:
+            raise PlanError(f"segment {number} combined overlap exceeds the shared kept segment after frame quantization")
+
+    if not any(overlaps):
         playlist = ET.SubElement(mlt, "playlist", {"id": "kept"})
         audio_playlist = ET.SubElement(mlt, "playlist", {"id": "kept_audio"}) if external_audio else None
         for _, _, start, end in kept:
@@ -319,52 +337,55 @@ def project_xml(segments: list[Segment], recording: Recording, external_audio: E
                 })
         output_frames = sum(end - start for _, _, start, end in kept)
     else:
-        _, outgoing, left_start, left_end = kept[transition]
-        _, _, right_start, right_end = kept[transition + 1]
-        duration = outgoing.transition_duration
-        assert duration is not None
-        overlap = frame_at(duration, recording.frame_rate)
-        left_frames = left_end - left_start
-        right_frames = right_end - right_start
-        if overlap < 1 or overlap > min(left_frames, right_frames):
-            raise PlanError("transition_duration needs at least one frame and cannot exceed either adjacent segment")
-        left_length = sum(end - start for _, _, start, end in kept[:transition + 1])
-        overlap_start = left_length - overlap
-        output_frames = sum(end - start for _, _, start, end in kept) - overlap
-
-        video_lanes = [ET.SubElement(mlt, "playlist", {"id": f"video_{side}"}) for side in ("before", "after")]
-        audio_lanes = ([ET.SubElement(mlt, "playlist", {"id": f"audio_{side}"}) for side in ("before", "after")]
+        lane_count = 1 + sum(overlap > 0 for overlap in overlaps)
+        video_lanes = [ET.SubElement(mlt, "playlist", {"id": f"video_{index}"}) for index in range(lane_count)]
+        audio_lanes = ([ET.SubElement(mlt, "playlist", {"id": f"audio_{index}"}) for index in range(lane_count)]
                        if external_audio is not None else [])
-        if overlap_start:
-            ET.SubElement(video_lanes[1], "blank", {"length": str(overlap_start)})
-        if audio_lanes and overlap_start:
-            ET.SubElement(audio_lanes[1], "blank", {"length": str(overlap_start)})
+        starts = [0]
+        lanes = [0]
+        lane_ends = [0] * lane_count
         for index, (_, _, start, end) in enumerate(kept):
-            side = 0 if index <= transition else 1
+            if index:
+                previous_length = kept[index - 1][3] - kept[index - 1][2]
+                starts.append(starts[-1] + previous_length - overlaps[index - 1])
+                lanes.append(lanes[-1] + (overlaps[index - 1] > 0))
+            lane = lanes[index]
             entry = {"in": str(start), "out": str(end - 1)}
-            ET.SubElement(video_lanes[side], "entry", {"producer": "source", **entry})
+            if starts[index] > lane_ends[lane]:
+                ET.SubElement(video_lanes[lane], "blank", {"length": str(starts[index] - lane_ends[lane])})
+                if audio_lanes:
+                    ET.SubElement(audio_lanes[lane], "blank", {"length": str(starts[index] - lane_ends[lane])})
+            ET.SubElement(video_lanes[lane], "entry", {"producer": "source", **entry})
             if audio_lanes:
-                ET.SubElement(audio_lanes[side], "entry", {"producer": "external_audio", **entry})
+                ET.SubElement(audio_lanes[lane], "entry", {"producer": "external_audio", **entry})
+            lane_ends[lane] = starts[index] + end - start
+        output_frames = starts[-1] + kept[-1][3] - kept[-1][2]
 
     tractor = ET.SubElement(mlt, "tractor", {"id": "project", "in": "0", "out": str(output_frames - 1)})
-    if transition is None:
+    if not any(overlaps):
         ET.SubElement(tractor, "track", {"producer": "kept"})
         if external_audio is not None:
             ET.SubElement(tractor, "track", {"producer": "kept_audio"})
     else:
-        for lane in video_lanes + audio_lanes:
-            ET.SubElement(tractor, "track", {"producer": lane.attrib["id"]})
-        audio_tracks = (2, 3) if external_audio is not None else (0, 1)
-        for service, a_track, b_track in (("luma", 0, 1), ("mix", *audio_tracks)):
-            if service == "mix" and recording.audio_index < 0 and external_audio is None:
+        for playlist in video_lanes + audio_lanes:
+            ET.SubElement(tractor, "track", {"producer": playlist.attrib["id"]})
+        for index, overlap in enumerate(overlaps):
+            if not overlap:
                 continue
-            effect = ET.SubElement(tractor, "transition", {
-                "in": str(overlap_start), "out": str(left_length - 1),
-            })
-            for property_name, property_value in (("a_track", a_track), ("b_track", b_track), ("mlt_service", service)):
-                ET.SubElement(effect, "property", {"name": property_name}).text = str(property_value)
-            if service == "mix":
-                ET.SubElement(effect, "property", {"name": "start"}).text = "-1"
+            for service in ("luma", "mix"):
+                if service == "mix" and recording.audio_index < 0 and external_audio is None:
+                    continue
+                offset = lane_count if service == "mix" and external_audio is not None else 0
+                effect = ET.SubElement(tractor, "transition", {
+                    "in": str(starts[index + 1]), "out": str(starts[index + 1] + overlap - 1),
+                })
+                for property_name, property_value in (
+                    ("a_track", lanes[index] + offset), ("b_track", lanes[index + 1] + offset),
+                    ("mlt_service", service),
+                ):
+                    ET.SubElement(effect, "property", {"name": property_name}).text = str(property_value)
+                if service == "mix":
+                    ET.SubElement(effect, "property", {"name": "start"}).text = "-1"
     ET.indent(mlt)
     return ET.tostring(mlt, encoding="utf-8", xml_declaration=True) + b"\n"
 

@@ -232,6 +232,69 @@ class RenderCliTests(unittest.TestCase):
         self.assertGreater(blend[1], 20)
         self.assertGreater(blend[2], 30)
 
+    def test_transition_across_discarded_segments_excludes_discarded_video_and_audio(self):
+        self.make_media()
+        self.generate_project([
+            {"source_start": 0, "source_end": 1, "keep": True, "join_after": "dissolve", "transition_duration": 0.5},
+            {"source_start": 1, "source_end": 1.5, "keep": False},
+            {"source_start": 1.5, "source_end": 2, "keep": False},
+            {"source_start": 2, "source_end": 3, "keep": True, "join_after": "cut"},
+        ])
+        rendered = self.render()
+        self.assertEqual(rendered.returncode, 0, rendered.stderr)
+        frames = subprocess.run([
+            "ffmpeg", "-v", "error", "-i", str(self.output), "-f", "rawvideo", "-pix_fmt", "rgb24", "-",
+        ], capture_output=True, check=True).stdout
+        frame_size = 64 * 64 * 3
+        self.assertEqual(len(frames) // frame_size, 15)
+        centers = [frames[index * frame_size + (32 * 64 + 32) * 3:index * frame_size + (32 * 64 + 32) * 3 + 3]
+                   for index in range(15)]
+        self.assertTrue(all(color[1] < 50 for color in centers), centers)
+        self.assertGreater(centers[7][0], 30)
+        self.assertGreater(centers[7][2], 30)
+        audio = subprocess.run([
+            "ffmpeg", "-v", "error", "-ss", "0.7", "-i", str(self.output),
+            "-t", "0.1", "-vn", "-ac", "1", "-ar", "44100", "-f", "s16le", "-",
+        ], capture_output=True, check=True).stdout
+        samples = struct.unpack(f"<{len(audio) // 2}h", audio)
+        def strength(frequency):
+            return abs(sum(sample * math.sin(2 * math.pi * frequency * i / 44100)
+                           for i, sample in enumerate(samples)))
+        self.assertGreater(strength(440), 100_000)
+        self.assertGreater(strength(880), 100_000)
+        self.assertLess(strength(660), min(strength(440), strength(880)) / 10)
+
+    def test_chained_transitions_use_each_duration_for_video_and_audio(self):
+        self.make_media()
+        self.generate_project([
+            {"source_start": 0, "source_end": 1, "keep": True, "join_after": "dissolve", "transition_duration": 0.2},
+            {"source_start": 1, "source_end": 2, "keep": True, "join_after": "dissolve", "transition_duration": 0.3},
+            {"source_start": 2, "source_end": 3, "keep": True, "join_after": "cut"},
+        ])
+        rendered = self.render()
+        self.assertEqual(rendered.returncode, 0, rendered.stderr)
+        frames = subprocess.run([
+            "ffmpeg", "-v", "error", "-i", str(self.output), "-f", "rawvideo", "-pix_fmt", "rgb24", "-",
+        ], capture_output=True, check=True).stdout
+        frame_size = 64 * 64 * 3
+        self.assertEqual(len(frames) // frame_size, 25)
+        for frame, channels in ((9, (0, 1)), (16, (1, 2))):
+            center = frames[frame * frame_size + (32 * 64 + 32) * 3:frame * frame_size + (32 * 64 + 32) * 3 + 3]
+            for channel in channels:
+                self.assertGreater(center[channel], 20, (frame, center))
+        for start, present, absent in ((0.85, (440, 660), 880), (1.6, (660, 880), 440)):
+            audio = subprocess.run([
+                "ffmpeg", "-v", "error", "-ss", str(start), "-i", str(self.output),
+                "-t", "0.1", "-vn", "-ac", "1", "-ar", "44100", "-f", "s16le", "-",
+            ], capture_output=True, check=True).stdout
+            samples = struct.unpack(f"<{len(audio) // 2}h", audio)
+            def strength(frequency):
+                return abs(sum(sample * math.sin(2 * math.pi * frequency * i / 44100)
+                               for i, sample in enumerate(samples)))
+            strengths = [strength(frequency) for frequency in present]
+            self.assertTrue(all(value > 20_000 for value in strengths), strengths)
+            self.assertLess(strength(absent), min(strengths) / 5)
+
     def test_external_audio_follows_source_cuts_without_obs_audio(self):
         self.make_media()
         self.make_external_audio()

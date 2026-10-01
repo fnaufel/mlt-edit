@@ -191,7 +191,7 @@ class ProjectCliTests(unittest.TestCase):
                 self.assertIn(message, result.stderr)
                 self.assertFalse(self.project.exists())
 
-    def test_unsupported_or_impossible_transitions_leave_no_project(self):
+    def test_impossible_transitions_leave_no_project(self):
         self.make_media()
         first = {"source_start": 0, "source_end": 1, "keep": True, "join_after": "dissolve", "transition_duration": 0.5}
         second = {"source_start": 1, "source_end": 2, "keep": True, "join_after": "cut"}
@@ -199,10 +199,16 @@ class ProjectCliTests(unittest.TestCase):
             ([first], "terminal transition"),
             ([{**first, "transition_duration": 1.1}, second], "more footage"),
             ([first, {**second, "source_end": 1.3}], "more footage"),
-            ([first, {"source_start": 1, "source_end": 2, "keep": False},
-              {"source_start": 2, "source_end": 3, "keep": True, "join_after": "cut"}], "across discarded footage"),
-            ([first, {**second, "join_after": "dissolve", "transition_duration": 0.5},
-              {"source_start": 2, "source_end": 3, "keep": True, "join_after": "cut"}], "transition chains"),
+            ([first, {"source_start": 1, "source_end": 2, "keep": False}], "following kept segment"),
+            ([{**first, "transition_duration": 0.6},
+              {**second, "join_after": "dissolve", "transition_duration": 0.5},
+              {"source_start": 2, "source_end": 3, "keep": True, "join_after": "cut"}], "combined overlap"),
+            ([{**first, "transition_duration": 0.35},
+              {"source_start": 1, "source_end": 1.6, "keep": True, "join_after": "dissolve", "transition_duration": 0.3},
+              {"source_start": 1.6, "source_end": 3, "keep": True, "join_after": "cut"}], "combined overlap"),
+            ([{**first, "transition_duration": 0.25},
+              {"source_start": 1, "source_end": 1.6, "keep": True, "join_after": "dissolve", "transition_duration": 0.35},
+              {"source_start": 1.6, "source_end": 3, "keep": True, "join_after": "cut"}], "after frame quantization"),
             ([{**first, "transition_duration": 0}, second], "transition_duration must be positive"),
             ([{**first, "transition_duration": 0.01}, second], "at least one frame"),
             ([{key: value for key, value in first.items() if key != "transition_duration"}, second], "transition_duration"),
@@ -214,6 +220,25 @@ class ProjectCliTests(unittest.TestCase):
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn(message, result.stderr)
                 self.assertFalse(self.project.exists())
+
+    def test_transition_crosses_multiple_discarded_segments_in_project(self):
+        self.make_media()
+        self.save_plan([
+            {"source_start": 0, "source_end": 0.8, "keep": True, "join_after": "dissolve", "transition_duration": 0.3},
+            {"source_start": 0.8, "source_end": 1.4, "keep": False},
+            {"source_start": 1.4, "source_end": 2, "keep": False},
+            {"source_start": 2, "source_end": 3, "keep": True, "join_after": "cut"},
+        ])
+        generated = self.generate()
+        self.assertEqual(generated.returncode, 0, generated.stderr)
+        xml = ET.parse(self.project)
+        tractor = xml.find("./tractor")
+        assert tractor is not None
+        self.assertEqual(tractor.get("out"), "14")
+        self.assertEqual(
+            [(entry.get("in"), entry.get("out")) for entry in xml.findall("./playlist/entry")],
+            [("0", "7"), ("20", "29")],
+        )
 
     def test_project_requires_explicit_replacement(self):
         self.make_media()
