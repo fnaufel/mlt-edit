@@ -40,6 +40,13 @@ class Recording:
     progressive: bool
 
 
+@dataclass(frozen=True)
+class ExternalAudio:
+    path: Path
+    stream_index: int
+    duration: Decimal
+
+
 def seconds(value: Any, label: str) -> Decimal:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise PlanError(f"{label} must be a finite number of seconds")
@@ -52,7 +59,7 @@ def seconds(value: Any, label: str) -> Decimal:
     return result
 
 
-def load_plan(path: Path) -> tuple[Path, list[Segment], int | None]:
+def load_plan(path: Path) -> tuple[Path, list[Segment], Path | None, int | None]:
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError) as error:
@@ -101,13 +108,22 @@ def load_plan(path: Path) -> tuple[Path, list[Segment], int | None]:
     audio_index = data.get("audio_stream")
     if audio_index is not None and (type(audio_index) is not int or audio_index < 0):
         raise PlanError("audio_stream must be a nonnegative stream index")
+    audio_file = data.get("audio_file")
+    if audio_file is not None and (not isinstance(audio_file, str) or not audio_file.strip()):
+        raise PlanError("audio_file must name one audio file")
     source_path = Path(source)
     if not source_path.is_absolute():
         source_path = path.parent / source_path
-    return source_path.resolve(), segments, audio_index
+    audio_path = None
+    if audio_file is not None:
+        audio_path = Path(audio_file)
+        if not audio_path.is_absolute():
+            audio_path = path.parent / audio_path
+        audio_path = audio_path.resolve()
+    return source_path.resolve(), segments, audio_path, audio_index
 
 
-def probe_recording(path: Path, selected_audio: int | None) -> Recording:
+def probe_recording(path: Path, selected_audio: int | None, external_audio: bool = False) -> Recording:
     if not path.is_file():
         raise PlanError(f"source recording does not exist: {path}; correct plan source")
     command = [
@@ -141,7 +157,9 @@ def probe_recording(path: Path, selected_audio: int | None) -> Recording:
     if rate <= 0 or width <= 0 or height <= 0 or not duration.is_finite() or duration <= 0 or sample_aspect <= 0:
         raise PlanError("source recording has invalid frame rate, resolution, or duration")
 
-    if selected_audio is None:
+    if external_audio:
+        audio_index = -1
+    elif selected_audio is None:
         if len(audios) > 1:
             raise PlanError("source recording has multiple audio streams; set plan audio_stream to a stream index")
         audio_index = int(audios[0]["index"]) if audios else -1
@@ -160,6 +178,48 @@ def probe_recording(path: Path, selected_audio: int | None) -> Recording:
             raise PlanError(f"variable-frame-rate source recording near video frame {number}; constant frame rate required")
     return Recording(path, rate, width, height, int(video["index"]), len(timestamps), duration,
                      audio_index, sample_aspect, video.get("field_order") not in {"tt", "bb", "tb", "bt"})
+
+
+def probe_external_audio(path: Path, selected_stream: int | None) -> ExternalAudio:
+    if not path.is_file():
+        raise PlanError(f"audio_file does not exist: {path}; correct plan audio_file")
+    try:
+        result = subprocess.run([
+            "ffprobe", "-v", "error", "-show_entries",
+            "stream=index,codec_type,duration:stream_tags=DURATION:format=duration",
+            "-of", "json", str(path),
+        ], text=True, capture_output=True, check=False)
+    except OSError as error:
+        raise PlanError(f"cannot run ffprobe: {error}") from error
+    if result.returncode:
+        raise PlanError(f"cannot inspect audio_file {path}: {result.stderr.strip()}")
+    details = json.loads(result.stdout)
+    audios = [stream for stream in details.get("streams", []) if stream.get("codec_type") == "audio"]
+    if not audios:
+        raise PlanError(f"audio_file has no audio streams: {path}")
+    if selected_stream is None:
+        if len(audios) > 1:
+            raise PlanError("audio_file has multiple audio streams; set plan audio_stream to a stream index")
+        audio_index = int(audios[0]["index"])
+    else:
+        if selected_stream not in [stream["index"] for stream in audios]:
+            raise PlanError(f"audio_stream {selected_stream} is not an audio stream in audio_file")
+        audio_index = selected_stream
+    selected = next(stream for stream in audios if stream["index"] == audio_index)
+    duration_text = selected.get("duration") or selected.get("tags", {}).get("DURATION")
+    if duration_text is None:
+        duration_text = details.get("format", {}).get("duration")
+    try:
+        if ":" in duration_text:
+            hours, minutes, seconds_part = duration_text.split(":")
+            duration = Decimal(hours) * 3600 + Decimal(minutes) * 60 + Decimal(seconds_part)
+        else:
+            duration = Decimal(duration_text)
+    except (TypeError, AttributeError, ValueError, InvalidOperation) as error:
+        raise PlanError(f"audio_file has no usable duration: {path}") from error
+    if not duration.is_finite() or duration <= 0:
+        raise PlanError(f"audio_file has no usable duration: {path}")
+    return ExternalAudio(path, audio_index, duration)
 
 
 def probe_frame_times(path: Path, video_index: int) -> list[Decimal]:
@@ -184,7 +244,7 @@ def frame_at(value: Decimal, rate: Fraction) -> int:
     return int(frames.to_integral_value(rounding=ROUND_HALF_UP))
 
 
-def project_xml(segments: list[Segment], recording: Recording) -> bytes:
+def project_xml(segments: list[Segment], recording: Recording, external_audio: ExternalAudio | None = None) -> bytes:
     video_duration = Decimal(recording.frame_count * recording.frame_rate.denominator) / Decimal(recording.frame_rate.numerator)
     for number, segment in enumerate(segments, 1):
         if segment.end > video_duration:
@@ -208,7 +268,15 @@ def project_xml(segments: list[Segment], recording: Recording) -> bytes:
         ("video_index", str(recording.video_index)), ("audio_index", str(recording.audio_index)),
     ):
         ET.SubElement(producer, "property", {"name": name}).text = value
+    if external_audio is not None:
+        audio_producer = ET.SubElement(mlt, "producer", {"id": "external_audio"})
+        for name, value in (
+            ("mlt_service", "avformat"), ("resource", str(external_audio.path)),
+            ("video_index", "-1"), ("audio_index", str(external_audio.stream_index)),
+        ):
+            ET.SubElement(audio_producer, "property", {"name": name}).text = value
     playlist = ET.SubElement(mlt, "playlist", {"id": "kept"})
+    audio_playlist = ET.SubElement(mlt, "playlist", {"id": "kept_audio"}) if external_audio else None
     output_frames = 0
     for number, segment in enumerate(segments, 1):
         if not segment.keep:
@@ -220,9 +288,17 @@ def project_xml(segments: list[Segment], recording: Recording) -> bytes:
         if end > recording.frame_count:
             raise PlanError(f"segment {number} ends beyond source recording duration ({recording.duration} seconds)")
         ET.SubElement(playlist, "entry", {"producer": "source", "in": str(start), "out": str(end - 1)})
+        if audio_playlist is not None and external_audio is not None:
+            if segment.end > external_audio.duration:
+                raise PlanError(f"kept segment {number} ends beyond audio_file duration ({external_audio.duration} seconds)")
+            ET.SubElement(audio_playlist, "entry", {
+                "producer": "external_audio", "in": str(start), "out": str(end - 1),
+            })
         output_frames += end - start
     tractor = ET.SubElement(mlt, "tractor", {"id": "project", "in": "0", "out": str(output_frames - 1)})
     ET.SubElement(tractor, "track", {"producer": "kept"})
+    if audio_playlist is not None:
+        ET.SubElement(tractor, "track", {"producer": "kept_audio"})
     ET.indent(mlt)
     return ET.tostring(mlt, encoding="utf-8", xml_declaration=True) + b"\n"
 
@@ -235,9 +311,10 @@ def main() -> None:
     args = parser.parse_args()
     project = args.project or args.plan.with_suffix("").with_suffix(".mlt")
     try:
-        source, segments, selected_audio = load_plan(args.plan)
-        recording = probe_recording(source, selected_audio)
-        xml = project_xml(segments, recording)
+        source, segments, audio_file, selected_audio = load_plan(args.plan)
+        recording = probe_recording(source, selected_audio, audio_file is not None)
+        external_audio = probe_external_audio(audio_file, selected_audio) if audio_file else None
+        xml = project_xml(segments, recording, external_audio)
         with project.open("wb" if args.replace else "xb") as file:
             file.write(xml)
     except FileExistsError:

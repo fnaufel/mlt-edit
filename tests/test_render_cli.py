@@ -45,6 +45,17 @@ class RenderCliTests(unittest.TestCase):
             "-c:v", "ffv1", "-c:a", "pcm_s16le", str(self.source),
         ], check=True, capture_output=True)
 
+    def make_external_audio(self):
+        self.external_audio = self.root / "replacement.wav"
+        command = ["ffmpeg", "-v", "error", "-y"]
+        for frequency in (1000, 1200, 1400):
+            command.extend(["-f", "lavfi", "-i", f"sine=frequency={frequency}:sample_rate=44100:duration=1"])
+        command.extend([
+            "-filter_complex", "[0:a][1:a][2:a]concat=n=3:v=0:a=1[a]",
+            "-map", "[a]", "-c:a", "pcm_s16le", str(self.external_audio),
+        ])
+        subprocess.run(command, check=True, capture_output=True)
+
     def make_project(self):
         self.make_media()
         self.generate_project([
@@ -54,7 +65,7 @@ class RenderCliTests(unittest.TestCase):
         ])
         self.assertFalse(self.output.exists())
 
-    def generate_project(self, segments, audio_stream=None):
+    def generate_project(self, segments, audio_stream=None, audio_file=None):
         plan = {
             "version": 1,
             "source": self.source.name,
@@ -64,12 +75,85 @@ class RenderCliTests(unittest.TestCase):
         }
         if audio_stream is not None:
             plan["audio_stream"] = audio_stream
+        if audio_file is not None:
+            plan["audio_file"] = audio_file
         self.plan.write_text(json.dumps(plan), encoding="utf-8")
         generated = subprocess.run([sys.executable, str(PROJECT_SCRIPT), str(self.plan)], capture_output=True, text=True)
         self.assertEqual(generated.returncode, 0, generated.stderr)
 
     def render(self, *args):
         return subprocess.run([sys.executable, str(RENDER_SCRIPT), str(self.project), *args], capture_output=True, text=True)
+
+    def test_external_audio_follows_source_cuts_without_obs_audio(self):
+        self.make_media()
+        self.make_external_audio()
+        self.generate_project([
+            {"source_start": 0, "source_end": 1, "keep": True, "join_after": "cut"},
+            {"source_start": 1, "source_end": 2, "keep": False},
+            {"source_start": 2, "source_end": 3, "keep": True, "join_after": "cut"},
+        ], audio_file=self.external_audio.name)
+        preview = self.root / "preview.mkv"
+        generated_preview = subprocess.run([
+            "melt", str(self.project), "-consumer", f"avformat:{preview}",
+            "vcodec=ffv1", "acodec=pcm_s16le", "real_time=-1",
+        ], capture_output=True, text=True)
+        self.assertEqual(generated_preview.returncode, 0, generated_preview.stderr)
+        rendered = self.render()
+        self.assertEqual(rendered.returncode, 0, rendered.stderr)
+
+        for output in (preview, self.output):
+            for second, expected in ((0, 1000), (1, 1400)):
+                with self.subTest(output=output.name, second=second):
+                    audio = subprocess.run([
+                        "ffmpeg", "-v", "error", "-ss", str(second + 0.25), "-i", str(output),
+                        "-t", "0.5", "-vn", "-ac", "1", "-ar", "44100", "-f", "s16le", "-",
+                    ], capture_output=True, check=True).stdout
+                    samples = struct.unpack(f"<{len(audio) // 2}h", audio)
+                    def strength(frequency):
+                        return abs(sum(sample * math.sin(2 * math.pi * frequency * i / 44100)
+                                       for i, sample in enumerate(samples)))
+                    self.assertGreater(strength(expected), 100_000)
+                    for excluded in (440, 660, 880, 1200):
+                        self.assertGreater(strength(expected), strength(excluded) * 10)
+
+    def test_external_audio_stream_selection_survives_mp4_render(self):
+        self.make_multiaudio_media()
+        external = self.root / "multiple.mkv"
+        subprocess.run([
+            "ffmpeg", "-v", "error", "-y",
+            "-f", "lavfi", "-i", "sine=frequency=1000:sample_rate=44100:duration=1",
+            "-f", "lavfi", "-i", "sine=frequency=1400:sample_rate=44100:duration=1",
+            "-map", "0:a", "-map", "1:a", "-c:a", "pcm_s16le", str(external),
+        ], check=True, capture_output=True)
+        self.generate_project([
+            {"source_start": 0, "source_end": 1, "keep": True, "join_after": "cut"},
+        ], audio_file=external.name, audio_stream=1)
+        rendered = self.render()
+        self.assertEqual(rendered.returncode, 0, rendered.stderr)
+        audio = subprocess.run([
+            "ffmpeg", "-v", "error", "-ss", "0.25", "-i", str(self.output),
+            "-t", "0.5", "-vn", "-ac", "1", "-ar", "44100", "-f", "s16le", "-",
+        ], capture_output=True, check=True).stdout
+        samples = struct.unpack(f"<{len(audio) // 2}h", audio)
+        def strength(frequency):
+            return abs(sum(sample * math.sin(2 * math.pi * frequency * i / 44100)
+                           for i, sample in enumerate(samples)))
+        self.assertGreater(strength(1400), 100_000)
+        for excluded in (440, 880, 1000):
+            self.assertGreater(strength(1400), strength(excluded) * 10)
+
+    def test_render_reports_missing_external_audio_after_project_generation(self):
+        self.make_media()
+        self.make_external_audio()
+        self.generate_project([
+            {"source_start": 0, "source_end": 1, "keep": True, "join_after": "cut"},
+        ], audio_file=self.external_audio.name)
+        self.external_audio.unlink()
+
+        rendered = self.render()
+        self.assertNotEqual(rendered.returncode, 0)
+        self.assertIn("project source does not exist", rendered.stderr)
+        self.assertFalse(self.output.exists())
 
     def test_render_keeps_selected_video_and_audio_with_shareable_codecs(self):
         self.make_project()

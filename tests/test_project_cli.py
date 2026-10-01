@@ -88,6 +88,89 @@ class ProjectCliTests(unittest.TestCase):
         self.assertTrue(all(color[0] > 200 and color[1] < 50 for color in centers[:2]), centers)
         self.assertTrue(all(color[2] > 200 and color[1] < 50 for color in centers[2:]), centers)
 
+    def test_audio_file_path_can_be_corrected_after_move(self):
+        self.make_media()
+        audio = self.root / "old.wav"
+        subprocess.run([
+            "ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "sine=frequency=1000:duration=1",
+            str(audio),
+        ], check=True, capture_output=True)
+        moved = self.root / "media" / "new.wav"
+        moved.parent.mkdir()
+        audio.rename(moved)
+        self.save_plan([
+            {"source_start": 0, "source_end": 1, "keep": True, "join_after": "cut"},
+        ], audio_file="media/new.wav")
+
+        generated = self.generate()
+        self.assertEqual(generated.returncode, 0, generated.stderr)
+        producers = ET.parse(self.project).findall("./producer")
+        resources = [{item.get("name"): item.text for item in producer.findall("property")}
+                     for producer in producers]
+        self.assertEqual(len(resources), 2)
+        self.assertEqual(resources[0]["audio_index"], "-1")
+        self.assertEqual(resources[1]["resource"], str(moved))
+        self.assertEqual(resources[1]["video_index"], "-1")
+
+    def test_external_audio_errors_leave_no_project(self):
+        self.make_media()
+        segments = [
+            {"source_start": 0, "source_end": 2, "keep": True, "join_after": "cut"},
+        ]
+        self.save_plan(segments, audio_file="missing.wav")
+        missing = self.generate()
+        self.assertNotEqual(missing.returncode, 0)
+        self.assertIn("audio_file does not exist", missing.stderr)
+        self.assertFalse(self.project.exists())
+
+        silent = self.root / "silent.mkv"
+        subprocess.run([
+            "ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "color=s=64x64:r=10:d=2",
+            "-c:v", "ffv1", str(silent),
+        ], check=True, capture_output=True)
+        self.save_plan(segments, audio_file=silent.name)
+        no_audio = self.generate()
+        self.assertNotEqual(no_audio.returncode, 0)
+        self.assertIn("no audio streams", no_audio.stderr)
+        self.assertFalse(self.project.exists())
+
+        short = self.root / "short.wav"
+        subprocess.run([
+            "ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "sine=frequency=1000:duration=1",
+            str(short),
+        ], check=True, capture_output=True)
+        self.save_plan(segments, audio_file=short.name)
+        too_short = self.generate()
+        self.assertNotEqual(too_short.returncode, 0)
+        self.assertIn("beyond audio_file duration", too_short.stderr)
+        self.assertFalse(self.project.exists())
+
+        multiple = self.root / "multiple.mkv"
+        subprocess.run([
+            "ffmpeg", "-v", "error", "-y",
+            "-f", "lavfi", "-i", "sine=frequency=1000:duration=2",
+            "-f", "lavfi", "-i", "sine=frequency=1400:duration=2",
+            "-map", "0:a", "-map", "1:a", "-c:a", "pcm_s16le", str(multiple),
+        ], check=True, capture_output=True)
+        self.save_plan(segments, audio_file=multiple.name)
+        ambiguous = self.generate()
+        self.assertNotEqual(ambiguous.returncode, 0)
+        self.assertIn("multiple audio streams", ambiguous.stderr)
+        self.assertFalse(self.project.exists())
+
+        unequal = self.root / "unequal.mkv"
+        subprocess.run([
+            "ffmpeg", "-v", "error", "-y",
+            "-f", "lavfi", "-i", "sine=frequency=1000:duration=1",
+            "-f", "lavfi", "-i", "sine=frequency=1400:duration=3",
+            "-map", "0:a", "-map", "1:a", "-c:a", "pcm_s16le", str(unequal),
+        ], check=True, capture_output=True)
+        self.save_plan(segments, audio_file=unequal.name, audio_stream=0)
+        selected_short = self.generate()
+        self.assertNotEqual(selected_short.returncode, 0)
+        self.assertIn("beyond audio_file duration", selected_short.stderr)
+        self.assertFalse(self.project.exists())
+
     def test_invalid_hand_edits_report_the_fault_without_writing_a_project(self):
         kept = {"source_start": 0, "source_end": 1, "keep": True, "join_after": "cut"}
         cases: list[tuple[dict[str, object], list[dict[str, object]], str]] = [
