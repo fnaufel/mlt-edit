@@ -219,7 +219,7 @@ but I prefer your current explicit model. It makes the recorded decisions determ
 
 Also, I'm using **`Recording Timestamp on File`**, not simply `Recording Timestamp`. [Local Stream Marker documents](https://github.com/honganqi/OBS-Local-Stream-Marker/blob/main/README.md) that the former accounts for OBS Automatic File Splitting; they differ only when splitting is active. The current converter still deliberately requires one recording file; multi-file recordings can be the next extension.
 
-The next thing I would implement is **`KEEP_TRANSITION`**, because that will force us to settle the general MLT timeline representation. After that, `TITLE` and replacement/processed audio fit naturally into the same model.
+The next thing I would implement is **`KEEP_TRANSITION`**, because that will force us to settle the general MLT timeline representation. The agreed milestone below now also includes replacement audio; rendering `TITLE` and processing audio remain later work.
 
 ## Agreed next milestone
 
@@ -245,7 +245,8 @@ These confirmed decisions extend the first version above.
 - A kept segment's outgoing join applies to the next kept segment even when discarded footage separates them. A cut joins without overlap; a transition dissolves video and crossfades the selected audio track.
 - The default transition duration is 0.5 seconds and is resolved into the plan. A transition overlaps the end of the first kept segment with the start of the next, shortens the output by its duration, and never includes discarded footage. A hand-edited plan may override the duration for an individual join.
 - Reject a transition without a following kept segment, one longer than either adjacent segment, or two transitions whose combined overlap exceeds the length of their shared segment.
-- Inspect the source recording at rendering time for frame rate, resolution, duration, and audio tracks. Reject variable-frame-rate input for this milestone with a clear error, and reject plan intervals beyond the recording. If there are several audio tracks, the plan must select one. If there is no audio track, render the video dissolve and report that audio crossfading was omitted.
+- Inspect the source recording at rendering time for frame rate, resolution, duration, and audio tracks. Reject variable-frame-rate input for this milestone with a clear error, and reject plan intervals beyond the recording. If OBS audio is used and there are several audio tracks, the plan must select one. If no audio source is selected, render the video dissolve and report that audio crossfading was omitted.
+- The plan may instead select one separate audio file as the audio source, replacing all OBS audio. Align its time zero with the source recording's time zero, apply the same kept intervals and transition overlaps to its audio, and never mix in OBS audio. Resolve its path relative to the plan where possible and allow the path to be corrected after a move. Reject a missing file, a file without audio, or a kept interval beyond its duration. If it has multiple audio streams, require an explicit stream selection. No sync offset or audio processing is part of this milestone.
 
 ### Annotations
 

@@ -7,6 +7,10 @@ This context describes decisions captured during an OBS recording and the result
 **Source recording**:
 The single video file whose footage is selected for an edit.
 
+**Audio source**:
+The sound selected for the finished edit, either from a stream in the source recording or from a separate audio file aligned to the source recording's timeline. It follows the same kept segments and joins as the video.
+_Avoid_: Soundtrack
+
 **Edit boundary**:
 A marker that closes and classifies the interval since the previous edit boundary, or since the start of the source recording. It can also specify how a kept interval joins the next kept interval.
 
