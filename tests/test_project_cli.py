@@ -191,6 +191,30 @@ class ProjectCliTests(unittest.TestCase):
                 self.assertIn(message, result.stderr)
                 self.assertFalse(self.project.exists())
 
+    def test_unsupported_or_impossible_transitions_leave_no_project(self):
+        self.make_media()
+        first = {"source_start": 0, "source_end": 1, "keep": True, "join_after": "dissolve", "transition_duration": 0.5}
+        second = {"source_start": 1, "source_end": 2, "keep": True, "join_after": "cut"}
+        cases = [
+            ([first], "terminal transition"),
+            ([{**first, "transition_duration": 1.1}, second], "more footage"),
+            ([first, {**second, "source_end": 1.3}], "more footage"),
+            ([first, {"source_start": 1, "source_end": 2, "keep": False},
+              {"source_start": 2, "source_end": 3, "keep": True, "join_after": "cut"}], "across discarded footage"),
+            ([first, {**second, "join_after": "dissolve", "transition_duration": 0.5},
+              {"source_start": 2, "source_end": 3, "keep": True, "join_after": "cut"}], "transition chains"),
+            ([{**first, "transition_duration": 0}, second], "transition_duration must be positive"),
+            ([{**first, "transition_duration": 0.01}, second], "at least one frame"),
+            ([{key: value for key, value in first.items() if key != "transition_duration"}, second], "transition_duration"),
+        ]
+        for segments, message in cases:
+            with self.subTest(message=message):
+                self.save_plan(segments)
+                result = self.generate()
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(message, result.stderr)
+                self.assertFalse(self.project.exists())
+
     def test_project_requires_explicit_replacement(self):
         self.make_media()
         self.save_plan([{"source_start": 0, "source_end": 1, "keep": True, "join_after": "cut"}])

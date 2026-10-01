@@ -7,6 +7,7 @@ import argparse
 import json
 import os
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 from xml.etree import ElementTree as ET
@@ -16,7 +17,7 @@ class RenderError(ValueError):
     """The project or encoder cannot produce a usable MP4."""
 
 
-def check_project(project: Path) -> bool:
+def check_project(project: Path) -> tuple[bool, bool]:
     try:
         root = ET.parse(project).getroot()
     except FileNotFoundError as error:
@@ -43,7 +44,13 @@ def check_project(project: Path) -> bool:
                 source = project.parent / source
             if not source.is_file():
                 raise RenderError(f"project source does not exist: {source}")
-    return any(index != "-1" for index in audio_indices) if audio_indices else True
+    has_audio = any(index != "-1" for index in audio_indices) if audio_indices else True
+    has_dissolve = any(
+        transition.get("mlt_service") == "luma"
+        or any(item.get("name") == "mlt_service" and item.text == "luma" for item in transition.findall("property"))
+        for transition in root.findall(".//transition")
+    )
+    return has_audio, has_dissolve
 
 
 def render(project: Path, output: Path, replace: bool, crf: int, preset: str, audio_bitrate: str) -> None:
@@ -51,7 +58,9 @@ def render(project: Path, output: Path, replace: bool, crf: int, preset: str, au
         raise RenderError("MP4 output must differ from the MLT project")
     if output.exists() and not replace:
         raise RenderError(f"MP4 already exists: {output}; use --replace to overwrite it")
-    has_audio = check_project(project)
+    has_audio, has_dissolve = check_project(project)
+    if has_dissolve and not has_audio:
+        print("warning: no audio source selected; no audio crossfade is possible", file=sys.stderr)
 
     try:
         descriptor, temporary_name = tempfile.mkstemp(prefix=".render-", suffix=".mp4", dir=output.parent)

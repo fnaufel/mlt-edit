@@ -80,9 +80,157 @@ class RenderCliTests(unittest.TestCase):
         self.plan.write_text(json.dumps(plan), encoding="utf-8")
         generated = subprocess.run([sys.executable, str(PROJECT_SCRIPT), str(self.plan)], capture_output=True, text=True)
         self.assertEqual(generated.returncode, 0, generated.stderr)
+        return generated
 
     def render(self, *args):
         return subprocess.run([sys.executable, str(RENDER_SCRIPT), str(self.project), *args], capture_output=True, text=True)
+
+    def test_adjacent_obs_transition_dissolves_video_and_crossfades_audio(self):
+        self.make_media()
+        self.generate_project([
+            {"source_start": 0, "source_end": 1, "keep": True, "join_after": "dissolve", "transition_duration": 0.5},
+            {"source_start": 1, "source_end": 2, "keep": True, "join_after": "cut"},
+        ])
+        rendered = self.render()
+        self.assertEqual(rendered.returncode, 0, rendered.stderr)
+        probe = subprocess.run([
+            "ffprobe", "-v", "error", "-show_format", "-of", "json", str(self.output),
+        ], capture_output=True, text=True, check=True)
+        self.assertAlmostEqual(float(json.loads(probe.stdout)["format"]["duration"]), 1.5, delta=0.15)
+
+        frames = subprocess.run([
+            "ffmpeg", "-v", "error", "-i", str(self.output), "-f", "rawvideo", "-pix_fmt", "rgb24", "-",
+        ], capture_output=True, check=True).stdout
+        frame_size = 64 * 64 * 3
+        self.assertEqual(len(frames) // frame_size, 15)
+        center = frames[7 * frame_size + (32 * 64 + 32) * 3:7 * frame_size + (32 * 64 + 32) * 3 + 3]
+        self.assertGreater(center[0], 30)
+        self.assertGreater(center[1], 20)
+
+        audio = subprocess.run([
+            "ffmpeg", "-v", "error", "-ss", "0.7", "-i", str(self.output),
+            "-t", "0.1", "-vn", "-ac", "1", "-ar", "44100", "-f", "s16le", "-",
+        ], capture_output=True, check=True).stdout
+        samples = struct.unpack(f"<{len(audio) // 2}h", audio)
+        def strength(frequency):
+            return abs(sum(sample * math.sin(2 * math.pi * frequency * i / 44100)
+                           for i, sample in enumerate(samples)))
+        self.assertGreater(strength(440), 100_000)
+        self.assertGreater(strength(660), 100_000)
+        def strength_at(start, frequency):
+            window = subprocess.run([
+                "ffmpeg", "-v", "error", "-ss", str(start), "-i", str(self.output),
+                "-t", "0.1", "-vn", "-ac", "1", "-ar", "44100", "-f", "s16le", "-",
+            ], capture_output=True, check=True).stdout
+            values = struct.unpack(f"<{len(window) // 2}h", window)
+            return abs(sum(value * math.sin(2 * math.pi * frequency * i / 44100)
+                           for i, value in enumerate(values)))
+        self.assertGreater(strength_at(0.55, 440), strength_at(0.85, 440) * 2)
+        self.assertGreater(strength_at(0.85, 660), strength_at(0.55, 660) * 2)
+
+    def test_adjacent_transition_crossfades_replacement_audio_without_obs_sound(self):
+        self.make_media()
+        self.make_external_audio()
+        self.generate_project([
+            {"source_start": 0, "source_end": 1, "keep": True, "join_after": "dissolve", "transition_duration": 0.5},
+            {"source_start": 1, "source_end": 2, "keep": True, "join_after": "cut"},
+        ], audio_file=self.external_audio.name)
+        rendered = self.render()
+        self.assertEqual(rendered.returncode, 0, rendered.stderr)
+        probe = subprocess.run([
+            "ffprobe", "-v", "error", "-show_format", "-of", "json", str(self.output),
+        ], capture_output=True, text=True, check=True)
+        self.assertAlmostEqual(float(json.loads(probe.stdout)["format"]["duration"]), 1.5, delta=0.15)
+        frames = subprocess.run([
+            "ffmpeg", "-v", "error", "-i", str(self.output), "-f", "rawvideo", "-pix_fmt", "rgb24", "-",
+        ], capture_output=True, check=True).stdout
+        frame_size = 64 * 64 * 3
+        self.assertEqual(len(frames) // frame_size, 15)
+        center = frames[7 * frame_size + (32 * 64 + 32) * 3:7 * frame_size + (32 * 64 + 32) * 3 + 3]
+        self.assertGreater(center[0], 30)
+        self.assertGreater(center[1], 20)
+        audio = subprocess.run([
+            "ffmpeg", "-v", "error", "-ss", "0.7", "-i", str(self.output),
+            "-t", "0.1", "-vn", "-ac", "1", "-ar", "44100", "-f", "s16le", "-",
+        ], capture_output=True, check=True).stdout
+        samples = struct.unpack(f"<{len(audio) // 2}h", audio)
+        def strength(frequency):
+            return abs(sum(sample * math.sin(2 * math.pi * frequency * i / 44100)
+                           for i, sample in enumerate(samples)))
+        self.assertGreater(strength(1000), 100_000)
+        self.assertGreater(strength(1200), 100_000)
+        self.assertLess(strength(440), strength(1000) / 10)
+        self.assertLess(strength(660), strength(1200) / 10)
+
+    def test_video_only_transition_warns_and_renders_dissolve(self):
+        subprocess.run([
+            "ffmpeg", "-v", "error", "-y",
+            "-f", "lavfi", "-i", "color=c=red:s=64x64:r=10:d=1",
+            "-f", "lavfi", "-i", "color=c=blue:s=64x64:r=10:d=1",
+            "-filter_complex", "[0:v][1:v]concat=n=2:v=1:a=0[v]",
+            "-map", "[v]", "-c:v", "ffv1", str(self.source),
+        ], check=True, capture_output=True)
+        generated = self.generate_project([
+            {"source_start": 0, "source_end": 1, "keep": True, "join_after": "dissolve", "transition_duration": 0.5},
+            {"source_start": 1, "source_end": 2, "keep": True, "join_after": "cut"},
+        ])
+        self.assertIn("no audio crossfade", generated.stderr)
+        rendered = self.render()
+        self.assertEqual(rendered.returncode, 0, rendered.stderr)
+        self.assertIn("no audio crossfade", rendered.stderr)
+        probe = subprocess.run([
+            "ffprobe", "-v", "error", "-show_streams", "-of", "json", str(self.output),
+        ], capture_output=True, text=True, check=True)
+        self.assertEqual([stream["codec_type"] for stream in json.loads(probe.stdout)["streams"]], ["video"])
+        frames = subprocess.run([
+            "ffmpeg", "-v", "error", "-i", str(self.output), "-f", "rawvideo", "-pix_fmt", "rgb24", "-",
+        ], capture_output=True, check=True).stdout
+        frame_size = 64 * 64 * 3
+        center = frames[7 * frame_size + (32 * 64 + 32) * 3:7 * frame_size + (32 * 64 + 32) * 3 + 3]
+        self.assertGreater(center[0], 30)
+        self.assertGreater(center[2], 30)
+
+    def test_hand_edited_transition_duration_controls_render_without_conversion(self):
+        self.make_media()
+        self.generate_project([
+            {"source_start": 0, "source_end": 1, "keep": True, "join_after": "dissolve", "transition_duration": 0.8},
+            {"source_start": 1, "source_end": 2, "keep": True, "join_after": "cut"},
+        ])
+        self.assertFalse((self.root / "markers.csv").exists())
+        rendered = self.render()
+        self.assertEqual(rendered.returncode, 0, rendered.stderr)
+        probe = subprocess.run([
+            "ffprobe", "-v", "error", "-show_format", "-of", "json", str(self.output),
+        ], capture_output=True, text=True, check=True)
+        self.assertAlmostEqual(float(json.loads(probe.stdout)["format"]["duration"]), 1.2, delta=0.15)
+        frames = subprocess.run([
+            "ffmpeg", "-v", "error", "-i", str(self.output), "-f", "rawvideo", "-pix_fmt", "rgb24", "-",
+        ], capture_output=True, check=True).stdout
+        frame_size = 64 * 64 * 3
+        self.assertEqual(len(frames) // frame_size, 12)
+        center = frames[6 * frame_size + (32 * 64 + 32) * 3:6 * frame_size + (32 * 64 + 32) * 3 + 3]
+        self.assertGreater(center[0], 30)
+        self.assertGreater(center[1], 20)
+
+    def test_cut_before_transition_keeps_all_selected_footage(self):
+        self.make_media()
+        self.generate_project([
+            {"source_start": 0, "source_end": 1, "keep": True, "join_after": "cut"},
+            {"source_start": 1, "source_end": 2, "keep": True, "join_after": "dissolve", "transition_duration": 0.5},
+            {"source_start": 2, "source_end": 3, "keep": True, "join_after": "cut"},
+        ])
+        rendered = self.render()
+        self.assertEqual(rendered.returncode, 0, rendered.stderr)
+        frames = subprocess.run([
+            "ffmpeg", "-v", "error", "-i", str(self.output), "-f", "rawvideo", "-pix_fmt", "rgb24", "-",
+        ], capture_output=True, check=True).stdout
+        frame_size = 64 * 64 * 3
+        self.assertEqual(len(frames) // frame_size, 25)
+        red = frames[2 * frame_size + (32 * 64 + 32) * 3:2 * frame_size + (32 * 64 + 32) * 3 + 3]
+        blend = frames[17 * frame_size + (32 * 64 + 32) * 3:17 * frame_size + (32 * 64 + 32) * 3 + 3]
+        self.assertGreater(red[0], 160)
+        self.assertGreater(blend[1], 20)
+        self.assertGreater(blend[2], 30)
 
     def test_external_audio_follows_source_cuts_without_obs_audio(self):
         self.make_media()
