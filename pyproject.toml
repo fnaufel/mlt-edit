@@ -6,7 +6,7 @@ dependencies = []
 
 [tool.mypy]
 python_version = "3.11"
-files = ["obs_csv_to_mlt.py", "plan_to_mlt.py", "tests"]
+files = ["obs_csv_to_mlt.py", "plan_to_mlt.py", "render_mlt.py", "tests"]
 check_untyped_defs = true
 
 [dependency-groups]
