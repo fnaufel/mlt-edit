@@ -11,6 +11,7 @@ import argparse
 import csv
 import json
 import os
+import sys
 import tomllib
 from pathlib import Path
 from typing import Any
@@ -39,13 +40,14 @@ def load_config(path: Path) -> dict[str, Any]:
         return tomllib.load(f)
 
 
-def read_rows(csv_path: Path) -> list[dict[str, str]]:
+def read_rows(csv_path: Path) -> list[tuple[int, dict[str, str]]]:
     with csv_path.open(newline="", encoding="utf-8-sig") as f:
-        return list(csv.DictReader(f, skipinitialspace=True))
+        reader = csv.DictReader(f, skipinitialspace=True)
+        return [(reader.line_num, row) for row in reader]
 
 
 def build_plan(
-    rows: list[dict[str, str]],
+    rows: list[tuple[int, dict[str, str]]],
     cfg: dict[str, Any],
 ) -> dict[str, Any]:
     csv_cfg = cfg["csv"]
@@ -60,7 +62,7 @@ def build_plan(
     if not rows:
         raise ValueError("CSV contains no marker rows")
 
-    paths = {row[path_col].strip() for row in rows if row[path_col].strip()}
+    paths = {row[path_col].strip() for _, row in rows if row[path_col].strip()}
     if len(paths) != 1:
         raise ValueError(
             "This first version expects exactly one recording file; "
@@ -69,22 +71,27 @@ def build_plan(
     source = next(iter(paths))
 
     events: list[dict[str, Any]] = []
-    for row in rows:
+    previous_time: int | None = None
+    for row_number, row in rows:
         comment = row[comment_col].strip()
-        if not comment:
-            continue
         if comment not in marker_cfg:
-            raise ValueError(f"Unknown marker comment {comment!r}")
+            raise ValueError(f"CSV row {row_number}: unknown marker comment {comment!r}")
 
         spec = marker_cfg[comment]
         kind = spec["kind"]
         t = parse_hms(row[timestamp_col])
+        if previous_time is not None and t < previous_time:
+            raise ValueError(f"CSV row {row_number}: timestamp is earlier than the previous row")
+        previous_time = t
+        if kind == "ignored":
+            continue
 
         event: dict[str, Any] = {
             "time": t,
             "timecode": seconds_to_hms(t),
             "marker": comment,
             "kind": kind,
+            "csv_row": row_number,
         }
 
         # Copy configured semantic fields into the normalized event.
@@ -96,12 +103,12 @@ def build_plan(
             end_raw = row[end_timestamp_col].strip()
             if end_raw and end_raw.lower() != "n/a":
                 end = parse_hms(end_raw)
+                if end < t:
+                    raise ValueError(f"CSV row {row_number}: range end precedes its start")
                 event["end"] = end
                 event["end_timecode"] = seconds_to_hms(end)
 
         events.append(event)
-
-    events.sort(key=lambda e: e["time"])
 
     segments: list[dict[str, Any]] = []
     annotations: list[dict[str, Any]] = []
@@ -112,8 +119,10 @@ def build_plan(
 
         if kind == "boundary":
             current = event["time"]
-            if current < previous_boundary:
-                raise ValueError("Markers are not in nondecreasing timestamp order")
+            if segments and current == previous_boundary:
+                raise ValueError(
+                    f"CSV row {event['csv_row']}: duplicate edit boundary at {event['timecode']}"
+                )
 
             segment = {
                 "source_start": previous_boundary,
@@ -168,7 +177,10 @@ def main() -> None:
 
     cfg = load_config(args.config)
     rows = read_rows(args.csv_file)
-    plan = build_plan(rows, cfg)
+    try:
+        plan = build_plan(rows, cfg)
+    except ValueError as error:
+        parser.error(str(error))
 
     stem = args.csv_file.with_suffix("")
     plan_path = args.plan or Path(f"{stem}.plan.json")
@@ -185,9 +197,18 @@ def main() -> None:
     except FileExistsError:
         parser.error(f"plan already exists: {plan_path}; use --replace to overwrite it")
 
+    for annotation in plan["annotations"]:
+        if annotation["kind"] == "range" and "end" not in annotation:
+            print(
+                f"warning: CSV row {annotation['csv_row']}: incomplete range "
+                f"{annotation['marker']!r} has no captured end",
+                file=sys.stderr,
+            )
+
     print(f"source: {plan['source']}")
     print(f"segments: {len(plan['segments'])}")
     print(f"annotations: {len(plan['annotations'])}")
+    print("annotations are preserved in source coordinates but not rendered in this milestone")
     print(f"plan: {plan_path}")
     print()
     print("Kept intervals:")
