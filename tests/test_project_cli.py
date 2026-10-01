@@ -164,6 +164,14 @@ class ProjectCliTests(unittest.TestCase):
         ambiguous = self.generate()
         self.assertNotEqual(ambiguous.returncode, 0)
         self.assertIn("multiple audio streams", ambiguous.stderr)
+        self.assertFalse(self.project.exists())
+        for invalid in (0, 3, -1, "2", True):
+            with self.subTest(audio_stream=invalid):
+                self.save_plan(segments, audio_stream=invalid)
+                rejected = self.generate()
+                self.assertNotEqual(rejected.returncode, 0)
+                self.assertIn("audio_stream", rejected.stderr)
+                self.assertFalse(self.project.exists())
         self.save_plan(segments, audio_stream=2)
         selected = self.generate()
         self.assertEqual(selected.returncode, 0, selected.stderr)

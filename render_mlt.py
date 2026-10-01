@@ -30,7 +30,10 @@ def check_project(project: Path) -> bool:
         properties = {item.get("name"): item.text for item in producer.findall("property")}
         if properties.get("mlt_service") != "avformat":
             continue
-        audio_indices.append(properties.get("audio_index"))
+        audio_index = properties.get("audio_index")
+        if audio_index is None:
+            raise RenderError("project source has no audio_index; regenerate the project with an explicit audio selection")
+        audio_indices.append(audio_index)
         resource = properties.get("resource")
         if not resource:
             raise RenderError(f"project has an avformat producer without a source: {project}")

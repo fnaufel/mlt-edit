@@ -6,6 +6,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from xml.etree import ElementTree as ET
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -34,6 +35,16 @@ class RenderCliTests(unittest.TestCase):
         ])
         subprocess.run(command, check=True, capture_output=True)
 
+    def make_multiaudio_media(self):
+        subprocess.run([
+            "ffmpeg", "-v", "error", "-y",
+            "-f", "lavfi", "-i", "color=c=red:s=64x64:r=10:d=1",
+            "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=44100:duration=1",
+            "-f", "lavfi", "-i", "sine=frequency=880:sample_rate=44100:duration=1",
+            "-map", "0:v", "-map", "1:a", "-map", "2:a",
+            "-c:v", "ffv1", "-c:a", "pcm_s16le", str(self.source),
+        ], check=True, capture_output=True)
+
     def make_project(self):
         self.make_media()
         self.generate_project([
@@ -43,14 +54,17 @@ class RenderCliTests(unittest.TestCase):
         ])
         self.assertFalse(self.output.exists())
 
-    def generate_project(self, segments):
-        self.plan.write_text(json.dumps({
+    def generate_project(self, segments, audio_stream=None):
+        plan = {
             "version": 1,
             "source": self.source.name,
             "tail_policy": "discard",
             "segments": segments,
             "annotations": [],
-        }), encoding="utf-8")
+        }
+        if audio_stream is not None:
+            plan["audio_stream"] = audio_stream
+        self.plan.write_text(json.dumps(plan), encoding="utf-8")
         generated = subprocess.run([sys.executable, str(PROJECT_SCRIPT), str(self.plan)], capture_output=True, text=True)
         self.assertEqual(generated.returncode, 0, generated.stderr)
 
@@ -143,6 +157,59 @@ class RenderCliTests(unittest.TestCase):
             "ffprobe", "-v", "error", "-show_entries", "stream=codec_type", "-of", "json", str(self.output),
         ], capture_output=True, text=True, check=True)
         self.assertEqual([stream["codec_type"] for stream in json.loads(probe.stdout)["streams"]], ["video"])
+
+    def test_selected_recording_audio_is_heard_in_project_and_mp4(self):
+        self.make_multiaudio_media()
+        self.generate_project(
+            [{"source_start": 0, "source_end": 1, "keep": True, "join_after": "cut"}],
+            audio_stream=2,
+        )
+        preview = self.root / "preview.mkv"
+        generated_preview = subprocess.run([
+            "melt", str(self.project), "-consumer", f"avformat:{preview}",
+            "vcodec=ffv1", "acodec=pcm_s16le", "real_time=-1",
+        ], capture_output=True, text=True)
+        self.assertEqual(generated_preview.returncode, 0, generated_preview.stderr)
+        rendered = self.render()
+        self.assertEqual(rendered.returncode, 0, rendered.stderr)
+
+        for output in (preview, self.output):
+            with self.subTest(output=output.name):
+                probe = subprocess.run([
+                    "ffprobe", "-v", "error", "-show_entries", "stream=codec_type", "-of", "json", str(output),
+                ], capture_output=True, text=True, check=True)
+                self.assertEqual([stream["codec_type"] for stream in json.loads(probe.stdout)["streams"]],
+                                 ["video", "audio"])
+                audio = subprocess.run([
+                    "ffmpeg", "-v", "error", "-i", str(output), "-vn", "-ac", "1", "-ar", "44100",
+                    "-f", "s16le", "-",
+                ], capture_output=True, check=True).stdout
+                samples = struct.unpack(f"<{len(audio) // 2}h", audio)
+                window = samples[11025:33075]
+                def strength(frequency):
+                    return abs(sum(sample * math.sin(2 * math.pi * frequency * i / 44100)
+                                   for i, sample in enumerate(window)))
+                self.assertGreater(strength(880), 100_000)
+                self.assertGreater(strength(880), strength(440) * 10)
+
+    def test_render_rejects_project_with_implicit_audio_selection(self):
+        self.make_multiaudio_media()
+        self.generate_project(
+            [{"source_start": 0, "source_end": 1, "keep": True, "join_after": "cut"}],
+            audio_stream=2,
+        )
+        tree = ET.parse(self.project)
+        producer = tree.find("./producer")
+        assert producer is not None
+        for item in producer.findall("property"):
+            if item.get("name") == "audio_index":
+                producer.remove(item)
+        tree.write(self.project, encoding="utf-8", xml_declaration=True)
+
+        rendered = self.render()
+        self.assertNotEqual(rendered.returncode, 0)
+        self.assertIn("audio_index", rendered.stderr)
+        self.assertFalse(self.output.exists())
 
 
 if __name__ == "__main__":
