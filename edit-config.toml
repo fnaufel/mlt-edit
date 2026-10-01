@@ -18,6 +18,8 @@ comment_column = "Comment"
 [behavior]
 # The portion after the last edit-boundary marker is not included.
 tail = "discard"
+# Duration in seconds stored in each transition join. Defaults to 0.5.
+# transition_duration = 0.5
 
 [markers.KEEP_CUT]
 kind = "boundary"
@@ -34,7 +36,6 @@ kind = "boundary"
 keep = false
 
 # These are normalized into annotations in the plan.
-# The first MLT backend intentionally does not render them yet.
 
 [markers.TITLE]
 kind = "point"

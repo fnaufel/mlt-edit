@@ -1,18 +1,8 @@
 #!/usr/bin/env python3
-"""
-Convert an OBS Local Stream Marker CSV into:
+"""Convert an OBS Local Stream Marker CSV into an editable JSON edit plan.
 
-1. a normalized JSON edit plan; and
-2. a simple MLT XML project containing the kept intervals.
-
-Marker semantics:
-- A "boundary" marker describes the interval from the previous boundary
-  (or recording start) up to this marker.
-- Point/range markers do not move the previous edit boundary.
-
-This first MLT backend implements KEEP/DELETE with hard cuts.
-It preserves other semantics (e.g. transitions, titles, important ranges)
-in the JSON plan for later backends.
+Boundary markers classify the interval since the previous boundary or recording
+start. Point and range markers remain annotations in source coordinates.
 """
 
 from __future__ import annotations
@@ -20,10 +10,8 @@ from __future__ import annotations
 import argparse
 import csv
 import json
-import sys
+import os
 import tomllib
-import xml.etree.ElementTree as ET
-from fractions import Fraction
 from pathlib import Path
 from typing import Any
 
@@ -44,11 +32,6 @@ def seconds_to_hms(seconds: int) -> str:
     h, rem = divmod(seconds, 3600)
     m, s = divmod(rem, 60)
     return f"{h:02d}:{m:02d}:{s:02d}"
-
-
-def frame_at(seconds: int, fps: Fraction) -> int:
-    # Markers only have one-second precision, so nearest frame is adequate.
-    return round(seconds * fps)
 
 
 def load_config(path: Path) -> dict[str, Any]:
@@ -141,6 +124,10 @@ def build_plan(
                 "marker": event["marker"],
                 "join_after": event.get("join"),
             }
+            if segment["keep"] and segment["join_after"] not in (None, "cut"):
+                segment["transition_duration"] = behavior.get(
+                    "transition_duration", 0.5
+                )
             segments.append(segment)
             previous_boundary = current
 
@@ -160,63 +147,9 @@ def build_plan(
     return plan
 
 
-def write_plan_json(plan: dict[str, Any], output: Path) -> None:
-    output.write_text(
-        json.dumps(plan, indent=2, ensure_ascii=False) + "\n",
-        encoding="utf-8",
-    )
-
-
-def write_mlt(plan: dict[str, Any], cfg: dict[str, Any], output: Path) -> None:
-    media = cfg["media"]
-    fps = Fraction(media["fps_num"], media["fps_den"])
-
-    root = ET.Element("mlt")
-    producer = ET.SubElement(root, "producer", {"id": "source"})
-    ET.SubElement(producer, "property", {"name": "resource"}).text = plan["source"]
-
-    playlist = ET.SubElement(root, "playlist", {"id": "main"})
-
-    warnings: list[str] = []
-
-    for seg in plan["segments"]:
-        if not seg["keep"]:
-            continue
-
-        start_frame = frame_at(seg["source_start"], fps)
-        end_frame = frame_at(seg["source_end"], fps)
-
-        # MLT out points are inclusive. Our edit plan uses half-open intervals.
-        out_frame = end_frame - 1
-        if out_frame < start_frame:
-            continue
-
-        ET.SubElement(
-            playlist,
-            "entry",
-            {
-                "producer": "source",
-                "in": str(start_frame),
-                "out": str(out_frame),
-            },
-        )
-
-        if seg.get("join_after") not in (None, "cut"):
-            warnings.append(
-                f"{seg['marker']} at {seg['source_end_timecode']} requests "
-                f"join {seg['join_after']!r}; this first backend renders it as a hard cut."
-            )
-
-    tractor = ET.SubElement(root, "tractor", {"id": "main_tractor"})
-    multitrack = ET.SubElement(tractor, "multitrack")
-    ET.SubElement(multitrack, "track", {"producer": "main"})
-
-    ET.indent(root, space="  ")
-    tree = ET.ElementTree(root)
-    tree.write(output, encoding="utf-8", xml_declaration=True)
-
-    for warning in warnings:
-        print(f"warning: {warning}", file=sys.stderr)
+def write_plan_json(plan: dict[str, Any], output: Path, replace: bool = False) -> None:
+    with output.open("w" if replace else "x", encoding="utf-8") as file:
+        file.write(json.dumps(plan, indent=2, ensure_ascii=False) + "\n")
 
 
 def main() -> None:
@@ -230,11 +163,7 @@ def main() -> None:
         type=Path,
         help="Output normalized JSON edit plan (default: CSV basename + .plan.json)",
     )
-    parser.add_argument(
-        "--mlt",
-        type=Path,
-        help="Output MLT XML (default: CSV basename + .mlt)",
-    )
+    parser.add_argument("--replace", action="store_true", help="Replace an existing plan")
     args = parser.parse_args()
 
     cfg = load_config(args.config)
@@ -243,16 +172,23 @@ def main() -> None:
 
     stem = args.csv_file.with_suffix("")
     plan_path = args.plan or Path(f"{stem}.plan.json")
-    mlt_path = args.mlt or Path(f"{stem}.mlt")
+    source_path = Path(plan["source"])
+    if not source_path.is_absolute():
+        source_path = args.csv_file.parent / source_path
+    try:
+        plan["source"] = os.path.relpath(source_path, plan_path.parent)
+    except ValueError:
+        plan["source"] = str(source_path)
 
-    write_plan_json(plan, plan_path)
-    write_mlt(plan, cfg, mlt_path)
+    try:
+        write_plan_json(plan, plan_path, replace=args.replace)
+    except FileExistsError:
+        parser.error(f"plan already exists: {plan_path}; use --replace to overwrite it")
 
     print(f"source: {plan['source']}")
     print(f"segments: {len(plan['segments'])}")
     print(f"annotations: {len(plan['annotations'])}")
     print(f"plan: {plan_path}")
-    print(f"mlt:  {mlt_path}")
     print()
     print("Kept intervals:")
     for seg in plan["segments"]:
