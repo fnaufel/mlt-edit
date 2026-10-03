@@ -10,7 +10,7 @@ from xml.etree import ElementTree as ET
 
 
 ROOT = Path(__file__).resolve().parents[1]
-PROJECT_SCRIPT = ROOT / "plan_to_mlt.py"
+PROJECT_SCRIPT = ROOT / "json_to_mlt.py"
 RENDER_SCRIPT = ROOT / "render_mlt.py"
 
 

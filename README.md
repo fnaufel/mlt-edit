@@ -3,8 +3,8 @@
 Convert one OBS marker CSV to an editable plan, generate an MLT project from the saved plan, then explicitly render that project to MP4. Python 3.11 or later, `ffprobe`, and `melt` are required. `ffmpeg` is used by the CLI tests to generate fixtures.
 
 ```bash
-python3 obs_csv_to_mlt.py markers.csv -c edit-config.toml
-python3 plan_to_mlt.py markers.plan.json
+python3 csv_to_json.py markers.csv -c edit-config.toml
+python3 json_to_mlt.py markers.plan.json
 melt markers.mlt
 python3 render_mlt.py markers.mlt
 ```
@@ -17,7 +17,7 @@ The source path is resolved relative to the plan. The generator checks the sourc
 
 To replace OBS audio, add `"audio_file": "media/replacement.wav"` to the hand-edited plan. The path is resolved relative to the plan, so it can be updated if the file moves. Its time zero aligns with the recording's time zero, and only the audio within kept source intervals is used. OBS audio is muted. If the external file has multiple audio streams, set `audio_stream` to the desired stream index in that file; otherwise the sole stream is selected automatically. The generator rejects a missing file, a file without audio, or a kept interval longer than the selected stream. Omit `audio_file` to retain OBS stream selection or silent-video behavior.
 
-The MLT project uses the recording's detected profile and can be previewed with `melt`. Project generation never starts an MP4 encode. The render command requires an `audio_index` on each source producer so that it cannot choose a source audio stream implicitly. It defaults to `markers.mp4` beside `markers.mlt`, H.264 video (`libx264`, CRF 23, medium preset), and AAC audio at 192k when the project has audio. It refuses to overwrite an existing MP4; use `--replace` to request replacement. A failed render leaves any existing MP4 intact. The project remains separately protected by `plan_to_mlt.py --replace`.
+The MLT project uses the recording's detected profile and can be previewed with `melt`. Project generation never starts an MP4 encode. The render command requires an `audio_index` on each source producer so that it cannot choose a source audio stream implicitly. It defaults to `markers.mp4` beside `markers.mlt`, H.264 video (`libx264`, CRF 23, medium preset), and AAC audio at 192k when the project has audio. It refuses to overwrite an existing MP4; use `--replace` to request replacement. A failed render leaves any existing MP4 intact. The project remains separately protected by `json_to_mlt.py --replace`.
 
 ```bash
 python3 render_mlt.py markers.mlt --output edited.mp4 --crf 20 --preset fast --audio-bitrate 128k

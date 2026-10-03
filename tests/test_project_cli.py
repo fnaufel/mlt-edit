@@ -8,7 +8,7 @@ from xml.etree import ElementTree as ET
 
 
 ROOT = Path(__file__).resolve().parents[1]
-SCRIPT = ROOT / "plan_to_mlt.py"
+SCRIPT = ROOT / "json_to_mlt.py"
 
 
 class ProjectCliTests(unittest.TestCase):

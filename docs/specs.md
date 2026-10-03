@@ -7,9 +7,11 @@ I suggest **not** going directly from the OBS CSV to complicated MLT XML. Put a 
 ```text
 OBS Local Stream Marker CSV
         ↓
-obs_csv_to_mlt.py
+csv_to_json.py
         ↓
 normalized edit plan (JSON)
+        ↓
+json_to_mlt.py
         ↓
 MLT XML
         ↓
@@ -18,7 +20,8 @@ melt → final video
 
 I made a working first version against your actual CSV:
 
-- `obs_csv_to_mlt.py`
+- `csv_to_json.py`
+- `json_to_mlt.py`
 - `edit-config.toml`
 
 ### What your test becomes
@@ -147,12 +150,13 @@ And changing the OBS hotkeys won't require rewriting the MLT implementation.
 
 ### Running it
 
-Assuming the two files are together:
+With the scripts and config in the repo directory:
 
 ```bash
-./obs_csv_to_mlt.py \
+python3 csv_to_json.py \
     2026-09-30_17-31-50.csv \
     -c edit-config.toml
+python3 json_to_mlt.py 2026-09-30_17-31-50.plan.json
 ```
 
 It produces:

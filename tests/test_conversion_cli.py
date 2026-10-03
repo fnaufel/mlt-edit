@@ -8,7 +8,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-SCRIPT = ROOT / "obs_csv_to_mlt.py"
+SCRIPT = ROOT / "csv_to_json.py"
 CONFIG = ROOT / "edit-config.toml"
 
 
