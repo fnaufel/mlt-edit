@@ -274,7 +274,7 @@ def frame_at(value: Decimal, rate: Fraction) -> int:
 
 def project_xml(segments: list[Segment], recording: Recording, external_audio: ExternalAudio | None = None) -> bytes:
     for number, segment in enumerate(segments, 1):
-        if segment.end > recording.video_duration:
+        if segment.keep and segment.end > recording.video_duration:
             raise PlanError(f"segment {number} ends beyond source recording duration ({recording.video_duration} seconds)")
     mlt = ET.Element("mlt", {"LC_NUMERIC": "C"})
     display_aspect = Fraction(recording.width, recording.height) * recording.sample_aspect

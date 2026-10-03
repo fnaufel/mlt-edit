@@ -261,11 +261,22 @@ class ProjectCliTests(unittest.TestCase):
         self.assertEqual(self.generate("--replace").returncode, 0)
         self.assertNotEqual(self.project.read_bytes(), original)
 
-    def test_discarded_interval_beyond_recording_is_rejected(self):
+    def test_discarded_interval_beyond_recording_after_last_kept_is_ignored(self):
         self.make_media()
         self.save_plan([
             {"source_start": 0, "source_end": 1, "keep": True, "join_after": "cut"},
             {"source_start": 1, "source_end": 4, "keep": False},
+        ])
+        result = self.generate()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(self.project.exists())
+        self.assertEqual(len(ET.parse(self.project).findall(".//playlist[@id='kept']/entry")), 1)
+
+    def test_kept_interval_beyond_recording_is_rejected(self):
+        self.make_media()
+        self.save_plan([
+            {"source_start": 0, "source_end": 1, "keep": True, "join_after": "cut"},
+            {"source_start": 1, "source_end": 4, "keep": True, "join_after": "cut"},
         ])
         result = self.generate()
         self.assertNotEqual(result.returncode, 0)
