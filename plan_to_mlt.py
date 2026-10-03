@@ -37,6 +37,7 @@ class Recording:
     video_index: int
     frame_count: int
     duration: Decimal
+    video_duration: Decimal
     audio_index: int
     sample_aspect: Fraction
     progressive: bool
@@ -145,7 +146,8 @@ def load_plan(path: Path) -> tuple[Path, list[Segment], Path | None, int | None]
     return source_path.resolve(), segments, audio_path, audio_index
 
 
-def probe_recording(path: Path, selected_audio: int | None, external_audio: bool = False) -> Recording:
+def probe_recording(path: Path, selected_audio: int | None, required_through: Decimal,
+                    external_audio: bool = False) -> Recording:
     if not path.is_file():
         raise PlanError(f"source recording does not exist: {path}; correct plan source")
     command = [
@@ -196,9 +198,13 @@ def probe_recording(path: Path, selected_audio: int | None, external_audio: bool
     expected_step = Decimal(rate.denominator) / Decimal(rate.numerator)
     tolerance = expected_step / 20
     for number, (left, right) in enumerate(zip(timestamps, timestamps[1:]), 2):
+        if left >= required_through:
+            break
         if abs((right - left) - expected_step) > tolerance:
             raise PlanError(f"variable-frame-rate source recording near video frame {number}; constant frame rate required")
-    return Recording(path, rate, width, height, int(video["index"]), len(timestamps), duration,
+    # A frame gap after the edit can reduce frame_count without shortening the source timeline.
+    video_duration = min(duration, timestamps[-1] + expected_step)
+    return Recording(path, rate, width, height, int(video["index"]), len(timestamps), duration, video_duration,
                      audio_index, sample_aspect, video.get("field_order") not in {"tt", "bb", "tb", "bt"})
 
 
@@ -267,10 +273,9 @@ def frame_at(value: Decimal, rate: Fraction) -> int:
 
 
 def project_xml(segments: list[Segment], recording: Recording, external_audio: ExternalAudio | None = None) -> bytes:
-    video_duration = Decimal(recording.frame_count * recording.frame_rate.denominator) / Decimal(recording.frame_rate.numerator)
     for number, segment in enumerate(segments, 1):
-        if segment.end > video_duration:
-            raise PlanError(f"segment {number} ends beyond source recording duration ({video_duration} seconds)")
+        if segment.end > recording.video_duration:
+            raise PlanError(f"segment {number} ends beyond source recording duration ({recording.video_duration} seconds)")
     mlt = ET.Element("mlt", {"LC_NUMERIC": "C"})
     display_aspect = Fraction(recording.width, recording.height) * recording.sample_aspect
     ET.SubElement(mlt, "profile", {
@@ -399,7 +404,8 @@ def main() -> None:
     project = args.project or args.plan.with_suffix("").with_suffix(".mlt")
     try:
         source, segments, audio_file, selected_audio = load_plan(args.plan)
-        recording = probe_recording(source, selected_audio, audio_file is not None)
+        last_kept_end = max(segment.end for segment in segments if segment.keep)
+        recording = probe_recording(source, selected_audio, last_kept_end, audio_file is not None)
         external_audio = probe_external_audio(audio_file, selected_audio) if audio_file else None
         xml = project_xml(segments, recording, external_audio)
         with project.open("wb" if args.replace else "xb") as file:

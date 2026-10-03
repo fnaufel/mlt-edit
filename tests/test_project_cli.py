@@ -32,6 +32,14 @@ class ProjectCliTests(unittest.TestCase):
         ])
         subprocess.run(command, check=True, capture_output=True)
 
+    def make_media_with_frame_gap(self):
+        subprocess.run([
+            "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+            "-f", "lavfi", "-i", "testsrc2=s=64x64:r=10:d=3",
+            "-vf", r"select=not(eq(n\,15))", "-fps_mode", "vfr", "-c:v", "ffv1",
+            str(self.source),
+        ], check=True, capture_output=True)
+
     def save_plan(self, segments, **changes):
         plan = {
             "version": 1,
@@ -280,6 +288,32 @@ class ProjectCliTests(unittest.TestCase):
         variable = self.generate()
         self.assertNotEqual(variable.returncode, 0)
         self.assertIn("variable-frame-rate", variable.stderr)
+        self.assertFalse(self.project.exists())
+
+    def test_frame_gap_after_final_kept_segment_is_ignored(self):
+        self.make_media_with_frame_gap()
+        kept = {"source_start": 0, "source_end": 1, "keep": True, "join_after": "cut"}
+        for segments in (
+            [kept],
+            [kept, {"source_start": 1, "source_end": 3, "keep": False}],
+        ):
+            with self.subTest(segments=segments):
+                self.save_plan(segments)
+                self.project.unlink(missing_ok=True)
+                result = self.generate()
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertTrue(self.project.exists())
+
+    def test_frame_gap_before_later_kept_segment_is_rejected(self):
+        self.make_media_with_frame_gap()
+        self.save_plan([
+            {"source_start": 0, "source_end": 1, "keep": True, "join_after": "cut"},
+            {"source_start": 1, "source_end": 2, "keep": False},
+            {"source_start": 2, "source_end": 3, "keep": True, "join_after": "cut"},
+        ])
+        result = self.generate()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("variable-frame-rate", result.stderr)
         self.assertFalse(self.project.exists())
 
     def test_multiple_audio_streams_require_valid_explicit_selection(self):
