@@ -47,7 +47,7 @@ mlt-edit-project markers.plan.yaml
 mlt-edit-render markers.mlt
 ```
 
-`mlt-edit-plan` uses this repository's `edit-config.toml` by default. Pass `-c path/to/config.toml` to override it. Relative input and output paths are resolved from the directory where you invoke each command.
+`mlt-edit-plan` and `mlt-edit-project` use this repository's `edit-config.toml` by default. Pass `-c path/to/config.toml` to either command to override it. Relative input and output paths are resolved from the directory where you invoke each command.
 
 The generated plan begins with a `# yaml-language-server: $schema=...` comment that points to [edit-plan.schema.json](edit-plan.schema.json). Install the Red Hat YAML extension in Positron to get validation and completion. The schema path is relative to the plan file. If you move the plan by itself, update that comment to point to the schema's new relative location.
 
@@ -71,13 +71,15 @@ To replace OBS audio, add `audio_file: media/replacement.wav` to the hand-edited
 
 ### Preview and refine the plan (optional)
 
-Both MLT projects use the recording's detected profile. The preview shows a prominent SOURCE clock in the original recording's elapsed time, a smaller EDIT clock in the resulting timeline's elapsed time, and `SEGMENT N` for the corresponding 1-based entry in the YAML `segments` list. Deleted segments still count, so gaps in the preview's segment numbers point to those YAML entries. Both clocks display `HH:MM:SS.S`, matching the plan's elapsed-time coordinates without an absolute frame count. After a deleted interval, SOURCE jumps while EDIT continues. During a dissolve, the two source clock and segment label images overlap because both source frames are visible. Open Melt's interactive preview with:
+Both MLT projects use the recording's detected profile. The preview shows one line along the bottom: `SOURCE: HH:MM:SS.SS    SEGMENT N        EDIT: HH:MM:SS.SS`. The source clock shows the original recording's elapsed time; the smaller edit clock shows the resulting timeline's elapsed time. The segment number is the corresponding 1-based entry in the YAML `segments` list. Deleted segments still count, so gaps in the preview's segment numbers point to those YAML entries. After a deleted interval, SOURCE jumps while EDIT continues. During a dissolve, the two source clock and segment label images overlap because both source frames are visible. Open Melt's interactive preview with:
 
 ```bash
 melt markers-preview.mlt
 ```
 
-When a boundary needs adjustment, change one `source_end` value in `markers.plan.yaml`, then regenerate both projects with `uv run python yaml_to_mlt.py markers.plan.yaml --replace` and preview again. This displays tenths of a second; use a numeric fractional-second value in the YAML for finer adjustments. Interactive playback does not encode an output video.
+When a boundary needs adjustment, change one `source_end` value in `markers.plan.yaml`, then regenerate both projects with `uv run python yaml_to_mlt.py markers.plan.yaml --replace` and preview again. This displays hundredths of a second; use a numeric fractional-second value in the YAML for finer adjustments. Interactive playback does not encode an output video.
+
+Set preview typography and colors in `[preview]` in [edit-config.toml](edit-config.toml). The default is bold DejaVu Sans, yellow text, and fully opaque black backgrounds. `font_size = 72` is the source clock size at 1080p; sizes scale with video height, and the segment and edit text use 75% of that size. `background_opacity` ranges from `0` (transparent) to `1` (opaque). Colors use quoted `#RRGGBB` values. Only the preview project receives these overlays.
 
 ### Render the project
 

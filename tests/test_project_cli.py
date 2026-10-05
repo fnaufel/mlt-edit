@@ -81,17 +81,31 @@ class ProjectCliTests(unittest.TestCase):
         preview = ET.parse(self.preview_project)
         source_filters = preview.findall("./producer[@id='source']/filter")
         output_filters = preview.findall("./tractor[@id='project']/filter")
-        self.assertEqual([effect.get("mlt_service") for effect in source_filters], ["timer"])
-        self.assertEqual([effect.get("mlt_service") for effect in output_filters], ["dynamictext", "dynamictext", "timer"])
-        arguments = [effect.findtext("./property[@name='argument']") for effect in output_filters[:2]]
-        self.assertEqual(arguments, ["SOURCE", "EDIT"])
-        self.assertEqual(source_filters[0].findtext("./property[@name='format']"), "HH:MM:SS.S")
+        self.assertEqual([effect.get("mlt_service") for effect in source_filters], ["avfilter.drawtext"])
+        self.assertEqual([effect.get("mlt_service") for effect in output_filters], ["avfilter.drawtext"])
+        source_text = source_filters[0].findtext("./property[@name='av.text']")
+        edit_text = output_filters[0].findtext("./property[@name='av.text']")
+        assert source_text is not None and edit_text is not None
+        self.assertTrue(source_text.startswith("SOURCE: %{eif:floor(t/3600):d:2}"))
+        self.assertTrue(edit_text.startswith("EDIT: %{eif:floor(t/3600):d:2}"))
+        self.assertIn("floor(t*100", source_text)
+        self.assertEqual(source_filters[0].findtext("./property[@name='position']"), "source")
+        self.assertEqual(output_filters[0].findtext("./property[@name='position']"), "filter")
+        self.assertEqual(source_filters[0].findtext("./property[@name='av.fontsize']"), "4")
+        self.assertEqual(output_filters[0].findtext("./property[@name='av.fontsize']"), "3")
+        self.assertEqual(source_filters[0].findtext("./property[@name='av.font']"), "DejaVu Sans:weight=700")
+        self.assertEqual(source_filters[0].findtext("./property[@name='av.fontcolor']"), "#ffff00")
+        self.assertEqual(source_filters[0].findtext("./property[@name='av.boxcolor']"), "#000000@1")
+        self.assertEqual(source_filters[0].findtext("./property[@name='av.x']"), "w*0.01")
+        self.assertEqual(output_filters[0].findtext("./property[@name='av.x']"), "w*0.735")
+        self.assertEqual(source_filters[0].findtext("./property[@name='av.y']"), "h-text_h-h*0.02")
         self.assertNotIn("#frame#", self.preview_project.read_text())
         preview_entries = preview.findall("./playlist/entry[@producer='source']")
         self.assertEqual(
-            [entry.findtext("./filter/property[@name='argument']") for entry in preview_entries],
+            [entry.findtext("./filter/property[@name='av.text']") for entry in preview_entries],
             ["SEGMENT 2", "SEGMENT 4"],
         )
+        self.assertTrue(all(entry.findtext("./filter/property[@name='av.x']") == "w*0.45" for entry in preview_entries))
         profile = xml.find("profile")
         assert profile is not None
         self.assertEqual(profile.attrib["frame_rate_num"], "10")
@@ -117,6 +131,36 @@ class ProjectCliTests(unittest.TestCase):
                    for index in (0, 5, 6, 11)]
         self.assertTrue(all(color[0] > 200 and color[1] < 50 for color in centers[:2]), centers)
         self.assertTrue(all(color[2] > 200 and color[1] < 50 for color in centers[2:]), centers)
+
+    def test_preview_style_can_be_set_in_config(self):
+        self.make_media()
+        self.save_plan([{"source_end": 1, "marker": "KEEP_CUT"}])
+        config = self.root / "custom.toml"
+        config.write_text("[preview]\nfont_family = 'Sans'\nfont_weight = 800\nfont_size = 108\ntext_color = '#ffcc00'\nbackground_color = '#123456'\nbackground_opacity = 0.5\n")
+
+        generated = self.generate("--config", str(config))
+
+        self.assertEqual(generated.returncode, 0, generated.stderr)
+        source_clock = ET.parse(self.preview_project).find("./producer[@id='source']/filter")
+        assert source_clock is not None
+        values = {item.get("name"): item.text for item in source_clock.findall("property")}
+        self.assertEqual(values["av.font"], "Sans:weight=800")
+        self.assertEqual(values["av.fontsize"], "6")
+        self.assertEqual(values["av.fontcolor"], "#ffcc00")
+        self.assertEqual(values["av.boxcolor"], "#123456@0.5")
+        self.assertEqual(ET.parse(self.project).findall(".//filter"), [])
+
+    def test_invalid_preview_style_fails_before_recording_probe(self):
+        self.save_plan([{"source_end": 1, "marker": "KEEP_CUT"}])
+        config = self.root / "invalid.toml"
+        config.write_text("[preview]\nbackground_opacity = 1.5\n")
+
+        result = self.generate("--config", str(config))
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("background_opacity", result.stderr)
+        self.assertNotIn("Inspecting recording", result.stderr)
+        self.assertFalse(self.project.exists())
 
     def test_timecode_frame_suffix_sets_rendered_boundaries(self):
         self.make_media()
@@ -303,7 +347,7 @@ class ProjectCliTests(unittest.TestCase):
         )
         preview_entries = ET.parse(self.preview_project).findall("./playlist/entry[@producer='source']")
         self.assertEqual(
-            [entry.findtext("./filter/property[@name='argument']") for entry in preview_entries],
+            [entry.findtext("./filter/property[@name='av.text']") for entry in preview_entries],
             ["SEGMENT 1", "SEGMENT 4"],
         )
 

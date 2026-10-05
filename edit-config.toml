@@ -21,6 +21,16 @@ tail = "discard"
 # Duration in seconds stored in each transition join. Defaults to 0.5.
 # transition_duration = 0.5
 
+[preview]
+# Base font size at 1080p. It scales with the recording's height.
+font_family = "DejaVu Sans"
+font_weight = 700
+font_size = 72
+text_color = "#ffff00"
+background_color = "#000000"
+# 1 is fully opaque; 0 is fully transparent.
+background_opacity = 1.0
+
 [markers.KEEP_CUT]
 kind = "boundary"
 

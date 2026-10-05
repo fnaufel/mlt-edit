@@ -11,6 +11,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import tomllib
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from fractions import Fraction
@@ -26,7 +27,9 @@ from plan_format import MARKER_DECISIONS
 
 
 SCHEMA_PATH = Path(__file__).with_name("edit-plan.schema.json")
+DEFAULT_CONFIG_PATH = Path(__file__).with_name("edit-config.toml")
 TIMECODE = re.compile(r"([0-9]{2,}):([0-5][0-9]):([0-5][0-9])(?::([0-9]{2,}))?")
+RGB_COLOR = re.compile(r"#[0-9a-fA-F]{6}")
 
 
 class PlanError(ValueError):
@@ -40,6 +43,45 @@ class Segment:
     keep: bool
     join_after: str | None
     transition_duration: Decimal | None = None
+
+
+@dataclass(frozen=True)
+class PreviewStyle:
+    font_family: str
+    font_weight: int
+    font_size: int
+    text_color: str
+    background_color: str
+    background_opacity: float
+
+
+def load_preview_style(path: Path) -> PreviewStyle:
+    try:
+        with path.open("rb") as file:
+            config = tomllib.load(file)
+    except (OSError, tomllib.TOMLDecodeError) as error:
+        raise PlanError(f"cannot read preview config {path}: {error}") from error
+    raw = config.get("preview", {})
+    if not isinstance(raw, dict):
+        raise PlanError("preview config must be a table")
+    family = raw.get("font_family", "DejaVu Sans")
+    weight = raw.get("font_weight", 700)
+    size = raw.get("font_size", 72)
+    text_color = raw.get("text_color", "#ffff00")
+    background_color = raw.get("background_color", "#000000")
+    opacity = raw.get("background_opacity", 1.0)
+    if not isinstance(family, str) or not family.strip():
+        raise PlanError("preview font_family must be a nonempty font family")
+    if type(weight) is not int or not 100 <= weight <= 1000:
+        raise PlanError("preview font_weight must be an integer from 100 to 1000")
+    if type(size) is not int or size <= 0:
+        raise PlanError("preview font_size must be a positive integer")
+    for name, color in (("text_color", text_color), ("background_color", background_color)):
+        if not isinstance(color, str) or RGB_COLOR.fullmatch(color) is None:
+            raise PlanError(f"preview {name} must be a #RRGGBB color")
+    if isinstance(opacity, bool) or not isinstance(opacity, (int, float)) or not math.isfinite(opacity) or not 0 <= opacity <= 1:
+        raise PlanError("preview background_opacity must be a number from 0 to 1")
+    return PreviewStyle(family, weight, size, text_color, background_color, float(opacity))
 
 
 @dataclass(frozen=True)
@@ -484,7 +526,7 @@ def project_xml(segments: list[Segment], recording: Recording, external_audio: E
     return ET.tostring(mlt, encoding="utf-8", xml_declaration=True) + b"\n"
 
 
-def preview_xml(project: bytes, recording: Recording, segments: list[Segment]) -> bytes:
+def preview_xml(project: bytes, recording: Recording, segments: list[Segment], style: PreviewStyle) -> bytes:
     mlt = ET.fromstring(project)
     source = mlt.find("./producer[@id='source']")
     tractor = mlt.find("./tractor[@id='project']")
@@ -495,19 +537,24 @@ def preview_xml(project: bytes, recording: Recording, segments: list[Segment]) -
         for name, value in properties.items():
             ET.SubElement(effect, "property", {"name": name}).text = value
 
-    def duration(frames: int) -> str:
-        total_seconds = math.ceil(Fraction(frames, 1) / recording.frame_rate) + 1
-        hours, remainder = divmod(total_seconds, 3600)
-        minutes, seconds = divmod(remainder, 60)
-        return f"{hours:02d}:{minutes:02d}:{seconds:02d}.000"
-
-    source_size = str(max(18, round(recording.height / 30)))
-    edit_size = str(max(14, round(recording.height / 40)))
-    common = {"fgcolour": "white", "bgcolour": "0x00000080", "pad": "6", "halign": "left", "valign": "top"}
-    add_filter(source, "timer", {
-        **common, "format": "HH:MM:SS.S", "direction": "up",
-        "duration": duration(recording.frame_count), "size": source_size,
-        "geometry": "2%/7%:55%x8%",
+    base_size = max(1, round(style.font_size * recording.height / 1080))
+    source_size = str(base_size)
+    secondary_size = str(max(1, round(base_size * 3 / 4)))
+    common = {
+        "av.font": f"{style.font_family}:weight={style.font_weight}",
+        "av.fontcolor": style.text_color,
+        "av.box": "1",
+        "av.boxcolor": f"{style.background_color}@{style.background_opacity:g}",
+        "av.boxborderw": str(max(1, round(recording.height / 180))),
+        "av.y": "h-text_h-h*0.02",
+    }
+    clock = (
+        "%{eif:floor(t/3600):d:2}:%{eif:mod(floor(t/60),60):d:2}:"
+        "%{eif:mod(floor(t),60):d:2}.%{eif:mod(floor(t*100+0.000001),100):d:2}"
+    )
+    add_filter(source, "avfilter.drawtext", {
+        **common, "av.text": f"SOURCE: {clock}", "av.fontsize": source_size,
+        "av.x": "w*0.01", "position": "source",
     })
     segment_numbers = {
         frame_at(segment.start, recording.frame_rate): number
@@ -515,22 +562,13 @@ def preview_xml(project: bytes, recording: Recording, segments: list[Segment]) -
     }
     for entry in mlt.findall("./playlist/entry[@producer='source']"):
         number = segment_numbers[int(entry.attrib["in"])]
-        add_filter(entry, "dynamictext", {
-            **common, "argument": f"SEGMENT {number}", "size": edit_size,
-            "geometry": "2%/15%:55%x8%",
+        add_filter(entry, "avfilter.drawtext", {
+            **common, "av.text": f"SEGMENT {number}", "av.fontsize": secondary_size,
+            "av.x": "w*0.45",
         })
-    add_filter(tractor, "dynamictext", {
-        **common, "argument": "SOURCE", "size": source_size,
-        "geometry": "2%/2%:55%x8%",
-    })
-    add_filter(tractor, "dynamictext", {
-        **common, "argument": "EDIT", "size": edit_size,
-        "geometry": "62%/2%:36%x8%",
-    })
-    add_filter(tractor, "timer", {
-        **common, "format": "HH:MM:SS.S", "direction": "up",
-        "duration": duration(int(tractor.attrib["out"]) + 1), "size": edit_size,
-        "geometry": "62%/7%:36%x8%",
+    add_filter(tractor, "avfilter.drawtext", {
+        **common, "av.text": f"EDIT: {clock}", "av.fontsize": secondary_size,
+        "av.x": "w*0.735", "position": "filter",
     })
     ET.indent(mlt)
     return ET.tostring(mlt, encoding="utf-8", xml_declaration=True) + b"\n"
@@ -578,12 +616,14 @@ def main() -> None:
     parser.add_argument("plan", type=Path, help="Saved YAML edit plan")
     parser.add_argument("--project", type=Path, help="Output MLT project (default: plan stem + .mlt)")
     parser.add_argument("--preview-project", type=Path, help="Output preview MLT project (default: project stem + -preview.mlt)")
+    parser.add_argument("-c", "--config", type=Path, default=DEFAULT_CONFIG_PATH, help="Preview style config (default: this repository's edit-config.toml)")
     parser.add_argument("--replace", action="store_true", help="Replace existing production and preview MLT projects")
     args = parser.parse_args()
     project = args.project or args.plan.with_suffix("").with_suffix(".mlt")
     preview_project = args.preview_project or project.with_name(f"{project.stem}-preview.mlt")
     try:
         check_project_paths([project, preview_project], args.replace)
+        style = load_preview_style(args.config)
         print("Loading edit plan...", file=sys.stderr, flush=True)
         source, segments, audio_file, selected_audio = load_plan(args.plan)
         last_kept_number = max(number for number, segment in enumerate(segments, 1) if segment.keep)
@@ -595,7 +635,7 @@ def main() -> None:
         external_audio = probe_external_audio(audio_file, selected_audio) if audio_file else None
         print("Building MLT project...", file=sys.stderr, flush=True)
         xml = project_xml(segments, recording, external_audio)
-        preview = preview_xml(xml, recording, segments)
+        preview = preview_xml(xml, recording, segments, style)
         print("Writing MLT projects...", file=sys.stderr, flush=True)
         write_projects([(project, xml), (preview_project, preview)], args.replace)
     except PlanError as error:
