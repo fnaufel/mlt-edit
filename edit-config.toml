@@ -23,17 +23,12 @@ tail = "discard"
 
 [markers.KEEP_CUT]
 kind = "boundary"
-keep = true
-join = "cut"
 
 [markers.KEEP_TRANSITION]
 kind = "boundary"
-keep = true
-join = "dissolve"
 
 [markers.DELETE]
 kind = "boundary"
-keep = false
 
 # These are normalized into annotations in the plan.
 

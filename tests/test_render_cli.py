@@ -61,15 +61,15 @@ class RenderCliTests(unittest.TestCase):
     def make_project(self):
         self.make_media()
         self.generate_project([
-            {"source_start": 0, "source_end": 1, "keep": True, "join_after": "cut"},
-            {"source_start": 1, "source_end": 2, "keep": False},
-            {"source_start": 2, "source_end": 3, "keep": True, "join_after": "cut"},
+            {"source_end": 1, "marker": "KEEP_CUT"},
+            {"source_end": 2, "marker": "DELETE"},
+            {"source_end": 3, "marker": "KEEP_CUT"},
         ])
         self.assertFalse(self.output.exists())
 
     def generate_project(self, segments, audio_stream=None, audio_file=None):
         plan = {
-            "version": 1,
+            "version": 2,
             "source": self.source.name,
             "tail_policy": "discard",
             "segments": segments,
@@ -90,8 +90,8 @@ class RenderCliTests(unittest.TestCase):
     def test_adjacent_obs_transition_dissolves_video_and_crossfades_audio(self):
         self.make_media()
         self.generate_project([
-            {"source_start": 0, "source_end": 1, "keep": True, "join_after": "dissolve", "transition_duration": 0.5},
-            {"source_start": 1, "source_end": 2, "keep": True, "join_after": "cut"},
+            {"source_end": 1, "marker": "KEEP_TRANSITION", "transition_duration": 0.5},
+            {"source_end": 2, "marker": "KEEP_CUT"},
         ])
         rendered = self.render()
         self.assertEqual(rendered.returncode, 0, rendered.stderr)
@@ -134,8 +134,8 @@ class RenderCliTests(unittest.TestCase):
         self.make_media()
         self.make_external_audio()
         self.generate_project([
-            {"source_start": 0, "source_end": 1, "keep": True, "join_after": "dissolve", "transition_duration": 0.5},
-            {"source_start": 1, "source_end": 2, "keep": True, "join_after": "cut"},
+            {"source_end": 1, "marker": "KEEP_TRANSITION", "transition_duration": 0.5},
+            {"source_end": 2, "marker": "KEEP_CUT"},
         ], audio_file=self.external_audio.name)
         rendered = self.render()
         self.assertEqual(rendered.returncode, 0, rendered.stderr)
@@ -173,8 +173,8 @@ class RenderCliTests(unittest.TestCase):
             "-map", "[v]", "-c:v", "ffv1", str(self.source),
         ], check=True, capture_output=True)
         generated = self.generate_project([
-            {"source_start": 0, "source_end": 1, "keep": True, "join_after": "dissolve", "transition_duration": 0.5},
-            {"source_start": 1, "source_end": 2, "keep": True, "join_after": "cut"},
+            {"source_end": 1, "marker": "KEEP_TRANSITION", "transition_duration": 0.5},
+            {"source_end": 2, "marker": "KEEP_CUT"},
         ])
         self.assertIn("no audio crossfade", generated.stderr)
         rendered = self.render()
@@ -195,8 +195,8 @@ class RenderCliTests(unittest.TestCase):
     def test_hand_edited_transition_duration_controls_render_without_conversion(self):
         self.make_media()
         self.generate_project([
-            {"source_start": 0, "source_end": 1, "keep": True, "join_after": "dissolve", "transition_duration": 0.8},
-            {"source_start": 1, "source_end": 2, "keep": True, "join_after": "cut"},
+            {"source_end": 1, "marker": "KEEP_TRANSITION", "transition_duration": 0.8},
+            {"source_end": 2, "marker": "KEEP_CUT"},
         ])
         self.assertFalse((self.root / "markers.csv").exists())
         rendered = self.render()
@@ -217,9 +217,9 @@ class RenderCliTests(unittest.TestCase):
     def test_cut_before_transition_keeps_all_selected_footage(self):
         self.make_media()
         self.generate_project([
-            {"source_start": 0, "source_end": 1, "keep": True, "join_after": "cut"},
-            {"source_start": 1, "source_end": 2, "keep": True, "join_after": "dissolve", "transition_duration": 0.5},
-            {"source_start": 2, "source_end": 3, "keep": True, "join_after": "cut"},
+            {"source_end": 1, "marker": "KEEP_CUT"},
+            {"source_end": 2, "marker": "KEEP_TRANSITION", "transition_duration": 0.5},
+            {"source_end": 3, "marker": "KEEP_CUT"},
         ])
         rendered = self.render()
         self.assertEqual(rendered.returncode, 0, rendered.stderr)
@@ -237,10 +237,10 @@ class RenderCliTests(unittest.TestCase):
     def test_transition_across_discarded_segments_excludes_discarded_video_and_audio(self):
         self.make_media()
         self.generate_project([
-            {"source_start": 0, "source_end": 1, "keep": True, "join_after": "dissolve", "transition_duration": 0.5},
-            {"source_start": 1, "source_end": 1.5, "keep": False},
-            {"source_start": 1.5, "source_end": 2, "keep": False},
-            {"source_start": 2, "source_end": 3, "keep": True, "join_after": "cut"},
+            {"source_end": 1, "marker": "KEEP_TRANSITION", "transition_duration": 0.5},
+            {"source_end": 1.5, "marker": "DELETE"},
+            {"source_end": 2, "marker": "DELETE"},
+            {"source_end": 3, "marker": "KEEP_CUT"},
         ])
         rendered = self.render()
         self.assertEqual(rendered.returncode, 0, rendered.stderr)
@@ -269,9 +269,9 @@ class RenderCliTests(unittest.TestCase):
     def test_chained_transitions_use_each_duration_for_video_and_audio(self):
         self.make_media()
         self.generate_project([
-            {"source_start": 0, "source_end": 1, "keep": True, "join_after": "dissolve", "transition_duration": 0.2},
-            {"source_start": 1, "source_end": 2, "keep": True, "join_after": "dissolve", "transition_duration": 0.3},
-            {"source_start": 2, "source_end": 3, "keep": True, "join_after": "cut"},
+            {"source_end": 1, "marker": "KEEP_TRANSITION", "transition_duration": 0.2},
+            {"source_end": 2, "marker": "KEEP_TRANSITION", "transition_duration": 0.3},
+            {"source_end": 3, "marker": "KEEP_CUT"},
         ])
         rendered = self.render()
         self.assertEqual(rendered.returncode, 0, rendered.stderr)
@@ -301,9 +301,9 @@ class RenderCliTests(unittest.TestCase):
         self.make_media()
         self.make_external_audio()
         self.generate_project([
-            {"source_start": 0, "source_end": 1, "keep": True, "join_after": "cut"},
-            {"source_start": 1, "source_end": 2, "keep": False},
-            {"source_start": 2, "source_end": 3, "keep": True, "join_after": "cut"},
+            {"source_end": 1, "marker": "KEEP_CUT"},
+            {"source_end": 2, "marker": "DELETE"},
+            {"source_end": 3, "marker": "KEEP_CUT"},
         ], audio_file=self.external_audio.name)
         preview = self.root / "preview.mkv"
         generated_preview = subprocess.run([
@@ -339,7 +339,7 @@ class RenderCliTests(unittest.TestCase):
             "-map", "0:a", "-map", "1:a", "-c:a", "pcm_s16le", str(external),
         ], check=True, capture_output=True)
         self.generate_project([
-            {"source_start": 0, "source_end": 1, "keep": True, "join_after": "cut"},
+            {"source_end": 1, "marker": "KEEP_CUT"},
         ], audio_file=external.name, audio_stream=1)
         rendered = self.render()
         self.assertEqual(rendered.returncode, 0, rendered.stderr)
@@ -359,7 +359,7 @@ class RenderCliTests(unittest.TestCase):
         self.make_media()
         self.make_external_audio()
         self.generate_project([
-            {"source_start": 0, "source_end": 1, "keep": True, "join_after": "cut"},
+            {"source_end": 1, "marker": "KEEP_CUT"},
         ], audio_file=self.external_audio.name)
         self.external_audio.unlink()
 
@@ -457,7 +457,7 @@ class RenderCliTests(unittest.TestCase):
             "ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "color=c=red:s=64x64:r=10:d=1",
             "-c:v", "ffv1", str(self.source),
         ], check=True, capture_output=True)
-        self.generate_project([{"source_start": 0, "source_end": 1, "keep": True, "join_after": "cut"}])
+        self.generate_project([{"source_end": 1, "marker": "KEEP_CUT"}])
         rendered = self.render()
         self.assertEqual(rendered.returncode, 0, rendered.stderr)
         probe = subprocess.run([
@@ -468,7 +468,7 @@ class RenderCliTests(unittest.TestCase):
     def test_selected_recording_audio_is_heard_in_project_and_mp4(self):
         self.make_multiaudio_media()
         self.generate_project(
-            [{"source_start": 0, "source_end": 1, "keep": True, "join_after": "cut"}],
+            [{"source_end": 1, "marker": "KEEP_CUT"}],
             audio_stream=2,
         )
         preview = self.root / "preview.mkv"
@@ -502,7 +502,7 @@ class RenderCliTests(unittest.TestCase):
     def test_render_rejects_project_with_implicit_audio_selection(self):
         self.make_multiaudio_media()
         self.generate_project(
-            [{"source_start": 0, "source_end": 1, "keep": True, "join_after": "cut"}],
+            [{"source_end": 1, "marker": "KEEP_CUT"}],
             audio_stream=2,
         )
         tree = ET.parse(self.project)

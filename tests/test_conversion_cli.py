@@ -55,13 +55,15 @@ class ConversionCliTests(unittest.TestCase):
 
         self.assertEqual(result.returncode, 0, result.stderr)
         plan = yaml.safe_load((self.root / "markers.plan.yaml").read_text())
-        self.assertEqual(plan["version"], 1)
+        self.assertEqual(plan["version"], 2)
         self.assertEqual(plan["source"], "recording.mkv")
         self.assertEqual(
-            [(segment["source_start"], segment["source_end"], segment["keep"]) for segment in plan["segments"]],
-            [("00:00:00", "00:00:02", True), ("00:00:02", "00:00:04", False), ("00:00:04", "00:00:06", True)],
+            [(segment["source_end"], segment["marker"]) for segment in plan["segments"]],
+            [("00:00:02", "KEEP_TRANSITION"), ("00:00:04", "DELETE"), ("00:00:06", "KEEP_CUT")],
         )
-        self.assertEqual(plan["segments"][0]["join_after"], "dissolve")
+        self.assertNotIn("source_start", plan["segments"][0])
+        self.assertNotIn("keep", plan["segments"][0])
+        self.assertNotIn("join_after", plan["segments"][0])
         self.assertEqual(plan["segments"][0]["transition_duration"], 0.5)
         self.assertFalse((self.root / "markers.plan.json").exists())
         plan_text = (self.root / "markers.plan.yaml").read_text()
@@ -73,7 +75,6 @@ class ConversionCliTests(unittest.TestCase):
         self.assertEqual(schema_path, ROOT / "edit-plan.schema.json")
         schema = json.loads(schema_path.read_text())
         jsonschema.validate(plan, schema)
-        plan["segments"][0]["source_start"] = "00:00:00:00"
         plan["segments"][0]["source_end"] = "00:00:02:12"
         jsonschema.validate(plan, schema)
         plan["segments"][0]["source_end"] = "00:00:99:12"
@@ -91,8 +92,8 @@ class ConversionCliTests(unittest.TestCase):
         self.assertFalse(self.source.exists())
         plan = yaml.safe_load((self.root / "markers.plan.yaml").read_text())
         self.assertEqual(
-            [(segment["source_start"], segment["source_end"], segment["keep"]) for segment in plan["segments"]],
-            [("00:00:00", "00:00:03", False), ("00:00:03", "00:00:07", False)],
+            [(segment["source_end"], segment["marker"]) for segment in plan["segments"]],
+            [("00:00:03", "DELETE"), ("00:00:07", "DELETE")],
         )
         self.assertEqual(plan["tail_policy"], "discard")
 
@@ -134,7 +135,7 @@ class ConversionCliTests(unittest.TestCase):
         replaced = self.convert("--replace")
 
         self.assertEqual(replaced.returncode, 0, replaced.stderr)
-        self.assertEqual(yaml.safe_load(plan_path.read_text())["version"], 1)
+        self.assertEqual(yaml.safe_load(plan_path.read_text())["version"], 2)
 
     def test_existing_plan_is_reported_before_input_processing(self):
         plan_path = self.root / "markers.plan.yaml"
@@ -191,10 +192,22 @@ class ConversionCliTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         plan = yaml.safe_load((self.root / "markers.plan.yaml").read_text())
         self.assertEqual(
-            [(segment["source_start"], segment["source_end"]) for segment in plan["segments"]],
-            [("00:00:00", "00:00:02"), ("00:00:02", "00:00:04")],
+            [segment["source_end"] for segment in plan["segments"]],
+            ["00:00:02", "00:00:04"],
         )
         self.assertEqual(plan["annotations"], [])
+
+    def test_custom_boundary_marker_cannot_create_an_ambiguous_plan(self):
+        self.write_csv([("00:00:02", "CUSTOM_KEEP")])
+        config_path = self.root / "custom.toml"
+        config_path.write_text(CONFIG.read_text() + '\n[markers.CUSTOM_KEEP]\nkind = "boundary"\n')
+
+        result = self.convert("-c", str(config_path))
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("CSV row 2", result.stderr)
+        self.assertIn("KEEP_CUT, KEEP_TRANSITION, or DELETE", result.stderr)
+        self.assertFalse((self.root / "markers.plan.yaml").exists())
 
     def test_decreasing_timestamp_reports_csv_row(self):
         self.write_csv([("00:00:04", "KEEP_CUT"), ("00:00:03", "TITLE")])
@@ -233,8 +246,8 @@ class ConversionCliTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         plan = yaml.safe_load((self.root / "markers.plan.yaml").read_text())
         self.assertEqual(
-            [(segment["source_start"], segment["source_end"], segment["keep"]) for segment in plan["segments"]],
-            [("00:00:00", "00:00:02", True), ("00:00:02", "00:00:06", False)],
+            [(segment["source_end"], segment["marker"]) for segment in plan["segments"]],
+            [("00:00:02", "KEEP_CUT"), ("00:00:06", "DELETE")],
         )
         self.assertEqual(
             [(item["kind"], item["time"], item.get("end")) for item in plan["annotations"]],

@@ -22,6 +22,8 @@ import jsonschema
 import yaml
 from tqdm import tqdm
 
+from plan_format import MARKER_DECISIONS
+
 
 SCHEMA_PATH = Path(__file__).with_name("edit-plan.schema.json")
 TIMECODE = re.compile(r"([0-9]{2,}):([0-5][0-9]):([0-5][0-9])(?::([0-9]{2,}))?")
@@ -118,6 +120,8 @@ def load_plan(path: Path) -> tuple[Path, list[Segment], Path | None, int | None]
         data = yaml.safe_load(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, yaml.YAMLError) as error:
         raise PlanError(f"cannot read plan {path}: {error}") from error
+    if isinstance(data, dict) and data.get("version") == 1:
+        raise PlanError("version 1 plan; convert it with migrate_plan.py")
     schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
     try:
         jsonschema.validate(data, schema)
@@ -126,8 +130,8 @@ def load_plan(path: Path) -> tuple[Path, list[Segment], Path | None, int | None]
         raise PlanError(f"{location}: {error.message}") from error
     if not isinstance(data, dict):
         raise PlanError("plan must be a mapping")
-    if type(data.get("version")) is not int or data["version"] != 1:
-        raise PlanError("unsupported plan version; expected version 1")
+    if type(data.get("version")) is not int or data["version"] != 2:
+        raise PlanError("unsupported plan version; expected version 2")
     source = data.get("source")
     if not isinstance(source, str) or not source.strip():
         raise PlanError("plan source must name one recording file")
@@ -140,8 +144,8 @@ def load_plan(path: Path) -> tuple[Path, list[Segment], Path | None, int | None]
     if not isinstance(raw_segments, list) or not raw_segments:
         raise PlanError("plan must contain source-order segments")
     has_frames = any(
-        isinstance(raw, dict) and isinstance(raw.get(key), str) and raw[key].count(":") == 3
-        for raw in raw_segments for key in ("source_start", "source_end")
+        isinstance(raw, dict) and isinstance(raw.get("source_end"), str) and raw["source_end"].count(":") == 3
+        for raw in raw_segments
     )
     frame_rate = probe_frame_rate(source_path) if has_frames else None
 
@@ -151,20 +155,11 @@ def load_plan(path: Path) -> tuple[Path, list[Segment], Path | None, int | None]
         label = f"segment {number}"
         if not isinstance(raw, dict):
             raise PlanError(f"{label} must be an object")
-        start = position_seconds(raw.get("source_start"), f"{label} source_start", frame_rate)
+        start = previous_end
         end = position_seconds(raw.get("source_end"), f"{label} source_end", frame_rate)
-        if start != previous_end:
-            raise PlanError(f"{label} must start at {previous_end} seconds to keep source-order contiguous intervals")
         if end <= start:
-            raise PlanError(f"{label} must have positive duration (source_end > source_start)")
-        keep = raw.get("keep")
-        if type(keep) is not bool:
-            raise PlanError(f"{label} keep must be true or false")
-        join = raw.get("join_after")
-        if join not in (None, "cut", "dissolve"):
-            raise PlanError(f"{label} join_after must be 'cut', 'dissolve', or null")
-        if not keep and join is not None:
-            raise PlanError(f"{label} is discarded and cannot have a join_after")
+            raise PlanError(f"{label} source_end must be later than the previous boundary ({start} seconds)")
+        keep, join = MARKER_DECISIONS[raw["marker"]]
         duration = None
         if join == "dissolve":
             duration = seconds(raw.get("transition_duration"), f"{label} transition_duration")

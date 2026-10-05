@@ -20,6 +20,8 @@ from typing import Any
 import jsonschema
 import yaml
 
+from plan_format import MARKER_DECISIONS
+
 
 SCHEMA_PATH = Path(__file__).with_name("edit-plan.schema.json")
 TIMECODE = re.compile(r"[0-9]{2,}:[0-5][0-9]:[0-5][0-9](?::[0-9]{2,})?")
@@ -137,6 +139,11 @@ def build_plan(
         kind = event["kind"]
 
         if kind == "boundary":
+            if event["marker"] not in MARKER_DECISIONS:
+                raise ValueError(
+                    f"CSV row {event['csv_row']}: boundary marker {event['marker']!r} "
+                    "must be KEEP_CUT, KEEP_TRANSITION, or DELETE"
+                )
             current = event["time"]
             if segments and current == previous_boundary:
                 raise ValueError(
@@ -144,13 +151,10 @@ def build_plan(
                 )
 
             segment = {
-                "source_start": seconds_to_hms(previous_boundary),
                 "source_end": seconds_to_hms(current),  # half-open interval [start, end)
-                "keep": bool(event["keep"]),
                 "marker": event["marker"],
-                "join_after": event.get("join"),
             }
-            if segment["keep"] and segment["join_after"] not in (None, "cut"):
+            if event["marker"] == "KEEP_TRANSITION":
                 segment["transition_duration"] = behavior.get(
                     "transition_duration", 0.5
                 )
@@ -167,7 +171,7 @@ def build_plan(
             raise ValueError(f"Unsupported marker kind {kind!r}")
 
     plan = {
-        "version": 1,
+        "version": 2,
         "source": source,
         "tail_policy": behavior.get("tail", "discard"),
         "segments": segments,
@@ -240,13 +244,15 @@ def main() -> None:
     print(f"plan: {plan_path}")
     print()
     print("Kept intervals:")
+    previous_end = "00:00:00"
     for seg in plan["segments"]:
-        if seg["keep"]:
+        if MARKER_DECISIONS[seg["marker"]][0]:
             print(
-                f"  {seg['source_start']} -> "
+                f"  {previous_end} -> "
                 f"{seg['source_end']}  "
                 f"({seg['marker']})"
             )
+        previous_end = seg["source_end"]
 
 
 if __name__ == "__main__":

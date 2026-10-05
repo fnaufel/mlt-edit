@@ -10,7 +10,7 @@ dependencies = [
 
 [tool.mypy]
 python_version = "3.11"
-files = ["csv_to_yaml.py", "yaml_to_mlt.py", "render_mlt.py", "tests"]
+files = ["csv_to_yaml.py", "yaml_to_mlt.py", "render_mlt.py", "migrate_plan.py", "plan_format.py", "tests"]
 check_untyped_defs = true
 
 [dependency-groups]

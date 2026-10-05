@@ -6,7 +6,7 @@
   "additionalProperties": false,
   "required": ["version", "source", "tail_policy", "segments", "annotations"],
   "properties": {
-    "version": {"const": 2},
+    "version": {"const": 1},
     "source": {"type": "string", "minLength": 1, "description": "Recording path, relative to this plan unless absolute."},
     "tail_policy": {"const": "discard"},
     "audio_file": {"type": "string", "minLength": 1, "description": "Optional replacement audio path, relative to this plan unless absolute."},
@@ -37,15 +37,15 @@
     "segment": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["source_end", "marker"],
+      "required": ["source_start", "source_end", "keep"],
       "properties": {
+        "source_start": {"$ref": "#/definitions/position"},
         "source_end": {"$ref": "#/definitions/position"},
-        "marker": {"enum": ["KEEP_CUT", "KEEP_TRANSITION", "DELETE"]},
+        "keep": {"type": "boolean"},
+        "marker": {"type": "string"},
+        "join_after": {"enum": ["cut", "dissolve", null]},
         "transition_duration": {"type": "number", "exclusiveMinimum": 0, "description": "Dissolve length in seconds."}
-      },
-      "allOf": [
-        {"if": {"properties": {"marker": {"const": "KEEP_TRANSITION"}}}, "then": {"required": ["transition_duration"]}, "else": {"not": {"required": ["transition_duration"]}}}
-      ]
+      }
     },
     "annotation": {
       "type": "object",

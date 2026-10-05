@@ -48,7 +48,7 @@ class ProjectCliTests(unittest.TestCase):
 
     def save_plan(self, segments, **changes):
         plan = {
-            "version": 1,
+            "version": 2,
             "source": self.source.name,
             "tail_policy": "discard",
             "segments": segments,
@@ -66,10 +66,10 @@ class ProjectCliTests(unittest.TestCase):
     def test_corrected_fractional_plan_renders_only_kept_footage(self):
         self.make_media()
         self.save_plan([
-            {"source_start": 0, "source_end": 0.2, "keep": False},
-            {"source_start": 0.2, "source_end": 0.8, "keep": True, "join_after": "cut"},
-            {"source_start": 0.8, "source_end": 2.2, "keep": False},
-            {"source_start": 2.2, "source_end": 2.8, "keep": True, "join_after": "cut"},
+            {"source_end": 0.2, "marker": "DELETE"},
+            {"source_end": 0.8, "marker": "KEEP_CUT"},
+            {"source_end": 2.2, "marker": "DELETE"},
+            {"source_end": 2.8, "marker": "KEEP_CUT"},
         ])
 
         result = self.generate()
@@ -121,8 +121,8 @@ class ProjectCliTests(unittest.TestCase):
     def test_timecode_frame_suffix_sets_rendered_boundaries(self):
         self.make_media()
         self.save_plan([
-            {"source_start": "00:00:00:00", "source_end": "00:00:00:02", "keep": False},
-            {"source_start": "00:00:00:02", "source_end": "00:00:00:08", "keep": True, "join_after": "cut"},
+            {"source_end": "00:00:00:02", "marker": "DELETE"},
+            {"source_end": "00:00:00:08", "marker": "KEEP_CUT"},
         ])
         generated = self.generate()
         self.assertEqual(generated.returncode, 0, generated.stderr)
@@ -131,7 +131,7 @@ class ProjectCliTests(unittest.TestCase):
             [("2", "7")],
         )
         self.save_plan([
-            {"source_start": "00:00:00:00", "source_end": "00:00:00:10", "keep": True, "join_after": "cut"},
+            {"source_end": "00:00:00:10", "marker": "KEEP_CUT"},
         ])
         invalid = self.generate("--replace")
         self.assertNotEqual(invalid.returncode, 0)
@@ -148,7 +148,7 @@ class ProjectCliTests(unittest.TestCase):
         moved.parent.mkdir()
         audio.rename(moved)
         self.save_plan([
-            {"source_start": 0, "source_end": 1, "keep": True, "join_after": "cut"},
+            {"source_end": 1, "marker": "KEEP_CUT"},
         ], audio_file="media/new.wav")
 
         generated = self.generate()
@@ -164,7 +164,7 @@ class ProjectCliTests(unittest.TestCase):
     def test_external_audio_errors_leave_no_project(self):
         self.make_media()
         segments = [
-            {"source_start": 0, "source_end": 2, "keep": True, "join_after": "cut"},
+            {"source_end": 2, "marker": "KEEP_CUT"},
         ]
         self.save_plan(segments, audio_file="missing.wav")
         missing = self.generate()
@@ -221,16 +221,17 @@ class ProjectCliTests(unittest.TestCase):
         self.assertFalse(self.project.exists())
 
     def test_invalid_hand_edits_report_the_fault_without_writing_a_project(self):
-        kept = {"source_start": 0, "source_end": 1, "keep": True, "join_after": "cut"}
+        kept = {"source_end": 1, "marker": "KEEP_CUT"}
         cases: list[tuple[dict[str, object], list[dict[str, object]], str]] = [
-            (dict(version=2), [kept], "version"),
+            (dict(version=1), [kept], "version 1"),
             (dict(source=[self.source.name]), [kept], "source"),
-            ({}, [{**kept, "source_start": 0.1}], "segment 1"),
-            ({}, [kept, {**kept, "source_start": 1.1, "source_end": 2}], "segment 2"),
+            ({}, [{**kept, "source_start": 0.1}], "source_start"),
+            ({}, [kept, {**kept, "source_end": 1}], "source_end"),
             ({}, [{**kept, "source_end": 0}], "source_end"),
             ({}, [{**kept, "join_after": "wipe"}], "join_after"),
-            ({}, [{**kept, "keep": False, "join_after": None}], "no kept segments"),
-            ({}, [{**kept, "join_after": "dissolve"}], "transition"),
+            ({}, [{**kept, "marker": "DELETE"}], "no kept segments"),
+            ({}, [{**kept, "marker": "UNRELATED"}], "marker"),
+            ({}, [{**kept, "marker": "KEEP_TRANSITION"}], "transition_duration"),
         ]
         for changes, segments, message in cases:
             with self.subTest(message=message):
@@ -243,7 +244,7 @@ class ProjectCliTests(unittest.TestCase):
     def test_yaml_syntax_and_schema_errors_leave_no_project(self):
         for content, message in [
             ("segments: [\n", "cannot read plan"),
-            ("version: 1\nsource: recording.mkv\ntail_policy: discard\nsegments:\n  - source_start: 0\n    source_end: 1\n    keep: maybe\nannotations: []\n", "keep"),
+            ("version: 2\nsource: recording.mkv\ntail_policy: discard\nsegments:\n  - source_end: 1\n    marker: maybe\nannotations: []\n", "marker"),
         ]:
             with self.subTest(message=message):
                 self.plan_path.write_text(content)
@@ -254,22 +255,22 @@ class ProjectCliTests(unittest.TestCase):
 
     def test_impossible_transitions_leave_no_project(self):
         self.make_media()
-        first = {"source_start": 0, "source_end": 1, "keep": True, "join_after": "dissolve", "transition_duration": 0.5}
-        second = {"source_start": 1, "source_end": 2, "keep": True, "join_after": "cut"}
+        first = {"source_end": 1, "marker": "KEEP_TRANSITION", "transition_duration": 0.5}
+        second = {"source_end": 2, "marker": "KEEP_CUT"}
         cases = [
             ([first], "terminal transition"),
             ([{**first, "transition_duration": 1.1}, second], "more footage"),
             ([first, {**second, "source_end": 1.3}], "more footage"),
-            ([first, {"source_start": 1, "source_end": 2, "keep": False}], "following kept segment"),
+            ([first, {"source_end": 2, "marker": "DELETE"}], "following kept segment"),
             ([{**first, "transition_duration": 0.6},
-              {**second, "join_after": "dissolve", "transition_duration": 0.5},
-              {"source_start": 2, "source_end": 3, "keep": True, "join_after": "cut"}], "combined overlap"),
+              {**second, "marker": "KEEP_TRANSITION", "transition_duration": 0.5},
+              {"source_end": 3, "marker": "KEEP_CUT"}], "combined overlap"),
             ([{**first, "transition_duration": 0.35},
-              {"source_start": 1, "source_end": 1.6, "keep": True, "join_after": "dissolve", "transition_duration": 0.3},
-              {"source_start": 1.6, "source_end": 3, "keep": True, "join_after": "cut"}], "combined overlap"),
+              {"source_end": 1.6, "marker": "KEEP_TRANSITION", "transition_duration": 0.3},
+              {"source_end": 3, "marker": "KEEP_CUT"}], "combined overlap"),
             ([{**first, "transition_duration": 0.25},
-              {"source_start": 1, "source_end": 1.6, "keep": True, "join_after": "dissolve", "transition_duration": 0.35},
-              {"source_start": 1.6, "source_end": 3, "keep": True, "join_after": "cut"}], "after frame quantization"),
+              {"source_end": 1.6, "marker": "KEEP_TRANSITION", "transition_duration": 0.35},
+              {"source_end": 3, "marker": "KEEP_CUT"}], "after frame quantization"),
             ([{**first, "transition_duration": 0}, second], "transition_duration"),
             ([{**first, "transition_duration": 0.01}, second], "at least one frame"),
             ([{key: value for key, value in first.items() if key != "transition_duration"}, second], "transition_duration"),
@@ -285,10 +286,10 @@ class ProjectCliTests(unittest.TestCase):
     def test_transition_crosses_multiple_discarded_segments_in_project(self):
         self.make_media()
         self.save_plan([
-            {"source_start": 0, "source_end": 0.8, "keep": True, "join_after": "dissolve", "transition_duration": 0.3},
-            {"source_start": 0.8, "source_end": 1.4, "keep": False},
-            {"source_start": 1.4, "source_end": 2, "keep": False},
-            {"source_start": 2, "source_end": 3, "keep": True, "join_after": "cut"},
+            {"source_end": 0.8, "marker": "KEEP_TRANSITION", "transition_duration": 0.3},
+            {"source_end": 1.4, "marker": "DELETE"},
+            {"source_end": 2, "marker": "DELETE"},
+            {"source_end": 3, "marker": "KEEP_CUT"},
         ])
         generated = self.generate()
         self.assertEqual(generated.returncode, 0, generated.stderr)
@@ -308,11 +309,11 @@ class ProjectCliTests(unittest.TestCase):
 
     def test_project_requires_explicit_replacement(self):
         self.make_media()
-        self.save_plan([{"source_start": 0, "source_end": 1, "keep": True, "join_after": "cut"}])
+        self.save_plan([{"source_end": 1, "marker": "KEEP_CUT"}])
         self.assertEqual(self.generate().returncode, 0)
         original = self.project.read_bytes()
         original_preview = self.preview_project.read_bytes()
-        self.save_plan([{"source_start": 0, "source_end": 2, "keep": True, "join_after": "cut"}])
+        self.save_plan([{"source_end": 2, "marker": "KEEP_CUT"}])
         refused = self.generate()
         self.assertNotEqual(refused.returncode, 0)
         self.assertIn("--replace", refused.stderr)
@@ -335,7 +336,7 @@ class ProjectCliTests(unittest.TestCase):
 
     def test_existing_preview_does_not_leave_a_production_project(self):
         self.make_media()
-        self.save_plan([{"source_start": 0, "source_end": 1, "keep": True, "join_after": "cut"}])
+        self.save_plan([{"source_end": 1, "marker": "KEEP_CUT"}])
         self.preview_project.write_text("hand edited preview")
         refused = self.generate()
         self.assertNotEqual(refused.returncode, 0)
@@ -345,7 +346,7 @@ class ProjectCliTests(unittest.TestCase):
 
     def test_production_and_preview_paths_must_differ(self):
         self.make_media()
-        self.save_plan([{"source_start": 0, "source_end": 1, "keep": True, "join_after": "cut"}])
+        self.save_plan([{"source_end": 1, "marker": "KEEP_CUT"}])
         refused = self.generate("--preview-project", str(self.project))
         self.assertNotEqual(refused.returncode, 0)
         self.assertIn("must differ", refused.stderr)
@@ -354,8 +355,8 @@ class ProjectCliTests(unittest.TestCase):
     def test_discarded_interval_beyond_recording_after_last_kept_is_ignored(self):
         self.make_media()
         self.save_plan([
-            {"source_start": 0, "source_end": 1, "keep": True, "join_after": "cut"},
-            {"source_start": 1, "source_end": 4, "keep": False},
+            {"source_end": 1, "marker": "KEEP_CUT"},
+            {"source_end": 4, "marker": "DELETE"},
         ])
         result = self.generate()
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -365,8 +366,8 @@ class ProjectCliTests(unittest.TestCase):
     def test_kept_interval_beyond_recording_is_rejected(self):
         self.make_media()
         self.save_plan([
-            {"source_start": 0, "source_end": 1, "keep": True, "join_after": "cut"},
-            {"source_start": 1, "source_end": 4, "keep": True, "join_after": "cut"},
+            {"source_end": 1, "marker": "KEEP_CUT"},
+            {"source_end": 4, "marker": "KEEP_CUT"},
         ])
         errors = io.StringIO()
         with patch.object(yaml_to_mlt, "probe_frame_times", side_effect=AssertionError("frame scan started")):
@@ -383,7 +384,7 @@ class ProjectCliTests(unittest.TestCase):
         self.assertFalse(self.project.exists())
 
     def test_missing_source_and_variable_frame_rate_report_clear_errors(self):
-        self.save_plan([{"source_start": 0, "source_end": 0.5, "keep": True, "join_after": "cut"}])
+        self.save_plan([{"source_end": 0.5, "marker": "KEEP_CUT"}])
         missing = self.generate()
         self.assertNotEqual(missing.returncode, 0)
         self.assertIn("correct plan source", missing.stderr)
@@ -401,10 +402,10 @@ class ProjectCliTests(unittest.TestCase):
 
     def test_frame_gap_after_final_kept_segment_is_ignored(self):
         self.make_media_with_frame_gap()
-        kept = {"source_start": 0, "source_end": 1, "keep": True, "join_after": "cut"}
+        kept = {"source_end": 1, "marker": "KEEP_CUT"}
         for segments in (
             [kept],
-            [kept, {"source_start": 1, "source_end": 3, "keep": False}],
+            [kept, {"source_end": 3, "marker": "DELETE"}],
         ):
             with self.subTest(segments=segments):
                 self.save_plan(segments)
@@ -415,9 +416,9 @@ class ProjectCliTests(unittest.TestCase):
     def test_frame_gap_before_later_kept_segment_is_rejected(self):
         self.make_media_with_frame_gap()
         self.save_plan([
-            {"source_start": 0, "source_end": 1, "keep": True, "join_after": "cut"},
-            {"source_start": 1, "source_end": 2, "keep": False},
-            {"source_start": 2, "source_end": 3, "keep": True, "join_after": "cut"},
+            {"source_end": 1, "marker": "KEEP_CUT"},
+            {"source_end": 2, "marker": "DELETE"},
+            {"source_end": 3, "marker": "KEEP_CUT"},
         ])
         result = self.generate()
         self.assertNotEqual(result.returncode, 0)
@@ -433,7 +434,7 @@ class ProjectCliTests(unittest.TestCase):
             "-map", "0:v", "-map", "1:a", "-map", "2:a",
             "-c:v", "ffv1", "-c:a", "pcm_s16le", str(self.source),
         ], check=True, capture_output=True)
-        segments = [{"source_start": 0, "source_end": 1, "keep": True, "join_after": "cut"}]
+        segments = [{"source_end": 1, "marker": "KEEP_CUT"}]
         self.save_plan(segments)
         ambiguous = self.generate()
         self.assertNotEqual(ambiguous.returncode, 0)
@@ -460,7 +461,7 @@ class ProjectCliTests(unittest.TestCase):
             "-map", "0:a", "-map", "1:v", "-c:a", "pcm_s16le", "-c:v", "ffv1",
             str(self.source),
         ], check=True, capture_output=True)
-        self.save_plan([{"source_start": 0, "source_end": 1, "keep": True, "join_after": "cut"}])
+        self.save_plan([{"source_end": 1, "marker": "KEEP_CUT"}])
 
         result = self.generate()
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -474,7 +475,7 @@ class ProjectCliTests(unittest.TestCase):
             "-f", "lavfi", "-i", "color=c=red:s=64x64:r=10:d=1",
             "-c:v", "ffv1", str(self.source),
         ], check=True, capture_output=True)
-        self.save_plan([{"source_start": 0, "source_end": 1, "keep": True, "join_after": "cut"}])
+        self.save_plan([{"source_end": 1, "marker": "KEEP_CUT"}])
 
         result = self.generate()
         self.assertEqual(result.returncode, 0, result.stderr)

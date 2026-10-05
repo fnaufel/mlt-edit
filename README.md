@@ -32,7 +32,9 @@ If the output plan already exists, the converter reports that before reading the
 uv run python yaml_to_mlt.py markers.plan.yaml
 ```
 
-This command reads only the YAML plan and writes `markers.mlt` for rendering and `markers-preview.mlt` for inspecting cuts. If desired, edit its `source` path, `keep` decisions, and `source_start` or `source_end` values before generating the projects.
+This command reads only the version 2 YAML plan and writes `markers.mlt` for rendering and `markers-preview.mlt` for inspecting cuts. Edit its `source` path, segment `marker` values, and `source_end` boundaries before generating the projects.
+
+To convert a version 1 plan, run `uv run python migrate_plan.py markers.plan.yaml`. This writes `markers.plan.v2.yaml` and leaves the original untouched. Use `--output path/to/new-plan.yaml` to choose another location; source and replacement-audio paths are adjusted relative to it. An existing output is reported before the old plan is read. Use `--replace` only to replace that output. The migration checks the old segment boundaries and derives each new marker from `keep` and `join_after`, which were authoritative in version 1. If a descriptive old `marker` disagreed with those fields, the migrated marker follows the actual old edit decision. The project generator requires version 2 and points version 1 users to this command.
 
 ### Run from a recording directory
 
@@ -40,6 +42,7 @@ The launchers in `bin/` use this project's `.venv` and keep the current director
 
 ```bash
 mlt-edit-plan markers.csv
+mlt-edit-migrate-plan old.plan.yaml
 mlt-edit-project markers.plan.yaml
 mlt-edit-render markers.mlt
 ```
@@ -50,9 +53,9 @@ The generated plan begins with a `# yaml-language-server: $schema=...` comment t
 
 In the plan:
 
-- `source_start` and `source_end` are the only segment boundaries. The converter writes quoted `HH:MM:SS` timecodes. You can add a frame number as `HH:MM:SS:FF`; the project generator uses the recording's frame rate to interpret it and rejects a frame number outside that rate. Fractional seconds remain valid as numbers for hand edits. The frame suffix is a frame offset within the named second, not a drop-frame timecode.
-- Segments must start at zero, remain contiguous and in source order, and have positive duration.
-- A kept segment may use `join_after: cut`, `dissolve`, or `null`.
+- Each segment stores only `source_end`. Its start is zero for the first segment, then the previous segment's end. The converter writes quoted `HH:MM:SS` timecodes. You can add a frame number as `HH:MM:SS:FF`; the project generator uses the recording's frame rate to interpret it and rejects a frame number outside that rate. Fractional seconds remain valid as numbers for hand edits. The frame suffix is a frame offset within the named second, not a drop-frame timecode.
+- Segment ends must increase strictly, so every interval has positive duration.
+- `marker: KEEP_CUT` keeps the interval and cuts to the next kept interval; `KEEP_TRANSITION` keeps it and dissolves into the next kept interval; `DELETE` discards it. A transition requires `transition_duration`. The three marker names are fixed for edit boundaries; the config can still define point, range, or ignored annotation markers.
 
 A `dissolve` joins the next kept segment when it is adjacent in source order. It overlaps the end of the first kept segment with the start of the next, shortens the output by the overlap, and crossfades the selected audio source. Conversion saves `transition_duration: 0.5` seconds by default, or the duration configured under `[behavior]`; edit this value on an individual segment to change its rendered join without reconverting the CSV.
 
@@ -74,7 +77,7 @@ Both MLT projects use the recording's detected profile. The preview shows a prom
 melt markers-preview.mlt
 ```
 
-When a boundary needs adjustment, change the shared `source_end` and next `source_start` value in `markers.plan.yaml`, then regenerate both projects with `uv run python yaml_to_mlt.py markers.plan.yaml --replace` and preview again. This displays tenths of a second; use a numeric fractional-second value in the YAML for finer adjustments. Interactive playback does not encode an output video.
+When a boundary needs adjustment, change one `source_end` value in `markers.plan.yaml`, then regenerate both projects with `uv run python yaml_to_mlt.py markers.plan.yaml --replace` and preview again. This displays tenths of a second; use a numeric fractional-second value in the YAML for finer adjustments. Interactive playback does not encode an output video.
 
 ### Render the project
 

@@ -1,6 +1,8 @@
 # Specification
 
-## First version
+## First version (historical)
+
+This document records the original design proposal. The current version 2 plan format, preview workflow, and render commands are documented in the [README](../README.md).
 
 I suggest **not** going directly from the OBS CSV to complicated MLT XML. Put a small, human-readable semantic layer in between:
 
