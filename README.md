@@ -66,7 +66,7 @@ To replace OBS audio, add `audio_file: media/replacement.wav` to the hand-edited
 
 ### Preview and refine the plan (optional)
 
-Both MLT projects use the recording's detected profile. The preview shows a prominent SOURCE clock in the original recording's elapsed time and a smaller EDIT clock in the resulting timeline's elapsed time. Both display `HH:MM:SS.S`, matching the plan's elapsed-time coordinates without an absolute frame count. After a deleted interval, SOURCE jumps while EDIT continues. During a dissolve, the two source clock images overlap because both source frames are visible. Open Melt's interactive preview with:
+Both MLT projects use the recording's detected profile. The preview shows a prominent SOURCE clock in the original recording's elapsed time, a smaller EDIT clock in the resulting timeline's elapsed time, and `SEGMENT N` for the corresponding 1-based entry in the YAML `segments` list. Deleted segments still count, so gaps in the preview's segment numbers point to those YAML entries. Both clocks display `HH:MM:SS.S`, matching the plan's elapsed-time coordinates without an absolute frame count. After a deleted interval, SOURCE jumps while EDIT continues. During a dissolve, the two source clock and segment label images overlap because both source frames are visible. Open Melt's interactive preview with:
 
 ```bash
 melt markers-preview.mlt

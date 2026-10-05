@@ -87,6 +87,11 @@ class ProjectCliTests(unittest.TestCase):
         self.assertEqual(arguments, ["SOURCE", "EDIT"])
         self.assertEqual(source_filters[0].findtext("./property[@name='format']"), "HH:MM:SS.S")
         self.assertNotIn("#frame#", self.preview_project.read_text())
+        preview_entries = preview.findall("./playlist/entry[@producer='source']")
+        self.assertEqual(
+            [entry.findtext("./filter/property[@name='argument']") for entry in preview_entries],
+            ["SEGMENT 2", "SEGMENT 4"],
+        )
         profile = xml.find("profile")
         assert profile is not None
         self.assertEqual(profile.attrib["frame_rate_num"], "10")
@@ -294,6 +299,11 @@ class ProjectCliTests(unittest.TestCase):
         self.assertEqual(
             [(entry.get("in"), entry.get("out")) for entry in xml.findall("./playlist/entry")],
             [("0", "7"), ("20", "29")],
+        )
+        preview_entries = ET.parse(self.preview_project).findall("./playlist/entry[@producer='source']")
+        self.assertEqual(
+            [entry.findtext("./filter/property[@name='argument']") for entry in preview_entries],
+            ["SEGMENT 1", "SEGMENT 4"],
         )
 
     def test_project_requires_explicit_replacement(self):
