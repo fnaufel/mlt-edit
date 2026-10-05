@@ -72,8 +72,6 @@ The MLT project uses the recording's detected profile. This command opens Melt's
 melt markers.mlt
 ```
 
-If the preview crashes, continue with the MP4 render step below.
-
 ### Render the project
 
 Project generation never starts an MP4 encode. The render command requires an `audio_index` on each source producer so that it cannot choose a source audio stream implicitly. It defaults to `markers.mp4` beside `markers.mlt`, H.264 video (`libx264`, CRF 23, medium preset), and AAC audio at 192k when the project has audio.
