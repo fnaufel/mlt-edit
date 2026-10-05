@@ -198,6 +198,10 @@ def main() -> None:
     )
     parser.add_argument("--replace", action="store_true", help="Replace an existing plan")
     args = parser.parse_args()
+    stem = args.csv_file.with_suffix("")
+    plan_path = args.plan or Path(f"{stem}.plan.yaml")
+    if not args.replace and (plan_path.exists() or plan_path.is_symlink()):
+        parser.error(f"plan already exists: {plan_path}; use --replace to overwrite it")
 
     cfg = load_config(args.config)
     rows = read_rows(args.csv_file)
@@ -206,8 +210,6 @@ def main() -> None:
     except ValueError as error:
         parser.error(str(error))
 
-    stem = args.csv_file.with_suffix("")
-    plan_path = args.plan or Path(f"{stem}.plan.yaml")
     source_path = Path(plan["source"])
     if not source_path.is_absolute():
         source_path = args.csv_file.parent / source_path

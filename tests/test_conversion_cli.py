@@ -136,6 +136,17 @@ class ConversionCliTests(unittest.TestCase):
         self.assertEqual(replaced.returncode, 0, replaced.stderr)
         self.assertEqual(yaml.safe_load(plan_path.read_text())["version"], 1)
 
+    def test_existing_plan_is_reported_before_input_processing(self):
+        plan_path = self.root / "markers.plan.yaml"
+        plan_path.write_text("hand_edited: true\n")
+
+        result = self.convert("-c", str(self.root / "missing.toml"))
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(f"plan already exists: {plan_path}", result.stderr)
+        self.assertNotIn("missing.toml", result.stderr)
+        self.assertEqual(plan_path.read_text(), "hand_edited: true\n")
+
     def test_unknown_marker_reports_its_csv_row(self):
         self.write_csv([("00:00:02", "KEEP_CUT"), ("00:00:03", "UNRELATED")])
 

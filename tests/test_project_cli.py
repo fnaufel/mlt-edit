@@ -133,7 +133,7 @@ class ProjectCliTests(unittest.TestCase):
         self.save_plan([
             {"source_start": "00:00:00:00", "source_end": "00:00:00:10", "keep": True, "join_after": "cut"},
         ])
-        invalid = self.generate()
+        invalid = self.generate("--replace")
         self.assertNotEqual(invalid.returncode, 0)
         self.assertIn("frame number", invalid.stderr)
 
@@ -321,6 +321,17 @@ class ProjectCliTests(unittest.TestCase):
         self.assertEqual(self.generate("--replace").returncode, 0)
         self.assertNotEqual(self.project.read_bytes(), original)
         self.assertNotEqual(self.preview_project.read_bytes(), original_preview)
+
+    def test_existing_project_is_reported_before_input_processing(self):
+        for blocked in (self.project, self.preview_project):
+            with self.subTest(blocked=blocked.name):
+                blocked.write_text("hand edited project")
+                result = self.generate()
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(f"project already exists: {blocked}", result.stderr)
+                self.assertNotIn("Loading edit plan", result.stderr)
+                self.assertEqual(blocked.read_text(), "hand edited project")
+                blocked.unlink()
 
     def test_existing_preview_does_not_leave_a_production_project(self):
         self.make_media()

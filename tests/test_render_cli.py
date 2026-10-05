@@ -421,6 +421,16 @@ class RenderCliTests(unittest.TestCase):
         self.assertNotEqual(failed.returncode, 0)
         self.assertEqual(self.output.read_bytes(), original)
 
+    def test_existing_output_is_reported_before_project_processing(self):
+        self.output.write_bytes(b"existing video")
+
+        result = self.render()
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(f"MP4 already exists: {self.output}", result.stderr)
+        self.assertNotIn("project does not exist", result.stderr)
+        self.assertEqual(self.output.read_bytes(), b"existing video")
+
     def test_project_and_encoder_failures_are_reported_without_output(self):
         missing = self.render()
         self.assertNotEqual(missing.returncode, 0)

@@ -56,7 +56,7 @@ def check_project(project: Path) -> tuple[bool, bool]:
 def render(project: Path, output: Path, replace: bool, crf: int, preset: str, audio_bitrate: str) -> None:
     if project.resolve() == output.resolve():
         raise RenderError("MP4 output must differ from the MLT project")
-    if output.exists() and not replace:
+    if (output.exists() or output.is_symlink()) and not replace:
         raise RenderError(f"MP4 already exists: {output}; use --replace to overwrite it")
     has_audio, has_dissolve = check_project(project)
     if has_dissolve and not has_audio:

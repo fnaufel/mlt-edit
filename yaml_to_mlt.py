@@ -541,13 +541,17 @@ def preview_xml(project: bytes, recording: Recording, segments: list[Segment]) -
     return ET.tostring(mlt, encoding="utf-8", xml_declaration=True) + b"\n"
 
 
-def write_projects(outputs: list[tuple[Path, bytes]], replace: bool) -> None:
-    if outputs[0][0].resolve() == outputs[1][0].resolve():
+def check_project_paths(paths: list[Path], replace: bool) -> None:
+    if paths[0].resolve() == paths[1].resolve():
         raise PlanError("production and preview project paths must differ")
     if not replace:
-        for path, _ in outputs:
-            if path.exists():
+        for path in paths:
+            if path.exists() or path.is_symlink():
                 raise PlanError(f"project already exists: {path}; use --replace to overwrite it")
+
+
+def write_projects(outputs: list[tuple[Path, bytes]], replace: bool) -> None:
+    check_project_paths([path for path, _ in outputs], replace)
     staged: list[Path] = []
     created: list[Path] = []
     try:
@@ -584,6 +588,7 @@ def main() -> None:
     project = args.project or args.plan.with_suffix("").with_suffix(".mlt")
     preview_project = args.preview_project or project.with_name(f"{project.stem}-preview.mlt")
     try:
+        check_project_paths([project, preview_project], args.replace)
         print("Loading edit plan...", file=sys.stderr, flush=True)
         source, segments, audio_file, selected_audio = load_plan(args.plan)
         last_kept_number = max(number for number, segment in enumerate(segments, 1) if segment.keep)
