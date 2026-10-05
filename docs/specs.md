@@ -7,11 +7,11 @@ I suggest **not** going directly from the OBS CSV to complicated MLT XML. Put a 
 ```text
 OBS Local Stream Marker CSV
         ↓
-csv_to_json.py
+csv_to_yaml.py
         ↓
-normalized edit plan (JSON)
+normalized edit plan (YAML)
         ↓
-json_to_mlt.py
+yaml_to_mlt.py
         ↓
 MLT XML
         ↓
@@ -20,8 +20,8 @@ melt → final video
 
 I made a working first version against your actual CSV:
 
-- `csv_to_json.py`
-- `json_to_mlt.py`
+- `csv_to_yaml.py`
+- `yaml_to_mlt.py`
 - `edit-config.toml`
 
 ### What your test becomes
@@ -101,41 +101,32 @@ if comment == "KEEP_CUT":
 
 scattered through the program. It should know about semantic concepts such as `boundary`, `point`, `range`, `keep`, `join`, etc.; the TOML says what your OBS marker names mean.
 
-Python \(3.11+\) reads TOML with `tomllib`, so there is no PyYAML or other dependency.
+Python \(3.11+\) reads TOML with `tomllib`; the editable YAML plan uses PyYAML and jsonschema.
 
 ### The normalized plan is important
 
 For your test it produces this, in part:
 
-```json
-{
-  "source": "/path/to/recording.mkv",
-  "segments": [
-    {
-      "source_start": 0,
-      "source_end": 39,
-      "keep": true,
-      "marker": "KEEP_CUT",
-      "join_after": "cut"
-    },
-    {
-      "source_start": 39,
-      "source_end": 47,
-      "keep": true,
-      "marker": "KEEP_CUT",
-      "join_after": "cut"
-    },
-    {
-      "source_start": 47,
-      "source_end": 55,
-      "keep": false,
-      "marker": "DELETE"
-    }
-  ]
-}
+```yaml
+source: /path/to/recording.mkv
+segments:
+  - source_start: "00:00:00"
+    source_end: "00:00:39"
+    keep: true
+    marker: KEEP_CUT
+    join_after: cut
+  - source_start: "00:00:39"
+    source_end: "00:00:47"
+    keep: true
+    marker: KEEP_CUT
+    join_after: cut
+  - source_start: "00:00:47"
+    source_end: "00:00:55"
+    keep: false
+    marker: DELETE
 ```
 
-I would make **this JSON format the contract of your editing system**.
+I would make **this YAML format the contract of your editing system**.
 
 That has a major advantage later. You can have:
 
@@ -153,16 +144,16 @@ And changing the OBS hotkeys won't require rewriting the MLT implementation.
 With the scripts and config in the repo directory:
 
 ```bash
-python3 csv_to_json.py \
+uv run python csv_to_yaml.py \
     2026-09-30_17-31-50.csv \
     -c edit-config.toml
-python3 json_to_mlt.py 2026-09-30_17-31-50.plan.json
+uv run python yaml_to_mlt.py 2026-09-30_17-31-50.plan.yaml
 ```
 
 It produces:
 
 ```text
-2026-09-30_17-31-50.plan.json
+2026-09-30_17-31-50.plan.yaml
 2026-09-30_17-31-50.mlt
 ```
 
@@ -231,8 +222,8 @@ These confirmed decisions extend the first version above.
 
 ### Workflow and artifacts
 
-- Convert an OBS Local Stream Marker CSV into an independently editable JSON edit plan. Conversion can run without the video file and does not overwrite an existing plan unless explicitly requested.
-- Render from the JSON plan without reading the CSV. The plan carries resolved transition durations, so later configuration changes do not alter an existing plan.
+- Convert an OBS Local Stream Marker CSV into an independently editable YAML edit plan. Conversion can run without the video file and does not overwrite an existing plan unless explicitly requested.
+- Render from the YAML plan without reading the CSV. The plan carries resolved transition durations, so later configuration changes do not alter an existing plan.
 - Use one source video file. Refer to it relatively when possible and allow its path to be corrected after moving the project.
 - Generate an inspectable MLT project for `melt` preview and an MP4 video through separate, explicit steps. Kdenlive project compatibility is outside this milestone. Neither output overwrites an existing file without an explicit request.
 - Default to H.264 video and AAC audio, with configurable encoding settings.

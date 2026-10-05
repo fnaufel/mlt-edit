@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Convert an OBS Local Stream Marker CSV into an editable JSON edit plan.
+"""Convert an OBS Local Stream Marker CSV into an editable YAML edit plan.
 
 Boundary markers classify the interval since the previous boundary or recording
 start. Point and range markers remain annotations in source coordinates.
@@ -11,10 +11,31 @@ import argparse
 import csv
 import json
 import os
+import re
 import sys
 import tomllib
 from pathlib import Path
 from typing import Any
+
+import jsonschema
+import yaml
+
+
+SCHEMA_PATH = Path(__file__).with_name("edit-plan.schema.json")
+TIMECODE = re.compile(r"[0-9]{2,}:[0-5][0-9]:[0-5][0-9](?::[0-9]{2,})?")
+
+
+class PlanDumper(yaml.SafeDumper):
+    pass
+
+
+def represent_string(dumper: PlanDumper, value: str) -> yaml.Node:
+    return dumper.represent_scalar(
+        "tag:yaml.org,2002:str", value, style='"' if TIMECODE.fullmatch(value) else None
+    )
+
+
+PlanDumper.add_representer(str, represent_string)
 
 
 def parse_hms(value: str) -> int:
@@ -88,7 +109,6 @@ def build_plan(
 
         event: dict[str, Any] = {
             "time": t,
-            "timecode": seconds_to_hms(t),
             "marker": comment,
             "kind": kind,
             "csv_row": row_number,
@@ -106,7 +126,6 @@ def build_plan(
                 if end < t:
                     raise ValueError(f"CSV row {row_number}: range end precedes its start")
                 event["end"] = end
-                event["end_timecode"] = seconds_to_hms(end)
 
         events.append(event)
 
@@ -121,14 +140,12 @@ def build_plan(
             current = event["time"]
             if segments and current == previous_boundary:
                 raise ValueError(
-                    f"CSV row {event['csv_row']}: duplicate edit boundary at {event['timecode']}"
+                    f"CSV row {event['csv_row']}: duplicate edit boundary at {seconds_to_hms(current)}"
                 )
 
             segment = {
-                "source_start": previous_boundary,
-                "source_end": current,  # half-open interval [start, end)
-                "source_start_timecode": seconds_to_hms(previous_boundary),
-                "source_end_timecode": seconds_to_hms(current),
+                "source_start": seconds_to_hms(previous_boundary),
+                "source_end": seconds_to_hms(current),  # half-open interval [start, end)
                 "keep": bool(event["keep"]),
                 "marker": event["marker"],
                 "join_after": event.get("join"),
@@ -141,6 +158,9 @@ def build_plan(
             previous_boundary = current
 
         elif kind in {"point", "range"}:
+            event["time"] = seconds_to_hms(event["time"])
+            if "end" in event:
+                event["end"] = seconds_to_hms(event["end"])
             annotations.append(event)
 
         else:
@@ -156,9 +176,13 @@ def build_plan(
     return plan
 
 
-def write_plan_json(plan: dict[str, Any], output: Path, replace: bool = False) -> None:
+def write_plan_yaml(plan: dict[str, Any], output: Path, replace: bool = False) -> None:
+    schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
+    jsonschema.validate(plan, schema)
+    schema_reference = os.path.relpath(SCHEMA_PATH, output.parent)
     with output.open("w" if replace else "x", encoding="utf-8") as file:
-        file.write(json.dumps(plan, indent=2, ensure_ascii=False) + "\n")
+        file.write(f"# yaml-language-server: $schema={schema_reference}\n")
+        yaml.dump(plan, file, Dumper=PlanDumper, sort_keys=False, allow_unicode=True)
 
 
 def main() -> None:
@@ -170,7 +194,7 @@ def main() -> None:
     parser.add_argument(
         "--plan",
         type=Path,
-        help="Output normalized JSON edit plan (default: CSV basename + .plan.json)",
+        help="Output editable YAML edit plan (default: CSV basename + .plan.yaml)",
     )
     parser.add_argument("--replace", action="store_true", help="Replace an existing plan")
     args = parser.parse_args()
@@ -183,7 +207,7 @@ def main() -> None:
         parser.error(str(error))
 
     stem = args.csv_file.with_suffix("")
-    plan_path = args.plan or Path(f"{stem}.plan.json")
+    plan_path = args.plan or Path(f"{stem}.plan.yaml")
     source_path = Path(plan["source"])
     if not source_path.is_absolute():
         source_path = args.csv_file.parent / source_path
@@ -193,9 +217,11 @@ def main() -> None:
         plan["source"] = str(source_path)
 
     try:
-        write_plan_json(plan, plan_path, replace=args.replace)
+        write_plan_yaml(plan, plan_path, replace=args.replace)
     except FileExistsError:
         parser.error(f"plan already exists: {plan_path}; use --replace to overwrite it")
+    except jsonschema.ValidationError as error:
+        parser.error(f"generated plan is invalid: {error.message}")
 
     for annotation in plan["annotations"]:
         if annotation["kind"] == "range" and "end" not in annotation:
@@ -215,8 +241,8 @@ def main() -> None:
     for seg in plan["segments"]:
         if seg["keep"]:
             print(
-                f"  {seg['source_start_timecode']} -> "
-                f"{seg['source_end_timecode']}  "
+                f"  {seg['source_start']} -> "
+                f"{seg['source_end']}  "
                 f"({seg['marker']})"
             )
 

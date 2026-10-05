@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
-"""Generate an MLT project from an independently edited JSON plan."""
+"""Generate an MLT project from an independently edited YAML plan."""
 
 from __future__ import annotations
 
 import argparse
 import json
+import math
+import re
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -13,6 +15,13 @@ from fractions import Fraction
 from pathlib import Path
 from typing import Any
 from xml.etree import ElementTree as ET
+
+import jsonschema
+import yaml
+
+
+SCHEMA_PATH = Path(__file__).with_name("edit-plan.schema.json")
+TIMECODE = re.compile(r"([0-9]{2,}):([0-5][0-9]):([0-5][0-9])(?::([0-9]{2,}))?")
 
 
 class PlanError(ValueError):
@@ -62,23 +71,76 @@ def seconds(value: Any, label: str) -> Decimal:
     return result
 
 
+def probe_frame_rate(path: Path) -> Fraction:
+    if not path.is_file():
+        raise PlanError(f"source recording does not exist: {path}; correct plan source")
+    try:
+        result = subprocess.run(
+            ["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=avg_frame_rate", "-of", "default=noprint_wrappers=1:nokey=1", str(path)],
+            text=True, capture_output=True, check=False,
+        )
+    except OSError as error:
+        raise PlanError(f"cannot run ffprobe: {error}") from error
+    if result.returncode:
+        raise PlanError(f"cannot inspect source recording {path}: {result.stderr.strip()}")
+    try:
+        rate = Fraction(result.stdout.strip())
+    except (ValueError, ZeroDivisionError) as error:
+        raise PlanError(f"source recording has invalid frame rate: {result.stdout.strip()!r}") from error
+    if rate <= 0:
+        raise PlanError("source recording has invalid frame rate")
+    return rate
+
+
+def position_seconds(value: Any, label: str, frame_rate: Fraction | None) -> Decimal:
+    if not isinstance(value, str):
+        return seconds(value, label)
+    match = TIMECODE.fullmatch(value)
+    if match is None:
+        raise PlanError(f"{label} must be HH:MM:SS or HH:MM:SS:FF")
+    hours, minutes, whole_seconds = (int(part) for part in match.group(1, 2, 3))
+    result = Decimal(hours * 3600 + minutes * 60 + whole_seconds)
+    frames = match.group(4)
+    if frames is not None:
+        assert frame_rate is not None
+        frame = int(frames)
+        if frame >= math.ceil(frame_rate):
+            raise PlanError(f"{label} frame number must be below {math.ceil(frame_rate)} at {frame_rate} fps")
+        result += Decimal(frame * frame_rate.denominator) / Decimal(frame_rate.numerator)
+    return result
+
+
 def load_plan(path: Path) -> tuple[Path, list[Segment], Path | None, int | None]:
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as error:
+        data = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, yaml.YAMLError) as error:
         raise PlanError(f"cannot read plan {path}: {error}") from error
+    schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
+    try:
+        jsonschema.validate(data, schema)
+    except jsonschema.ValidationError as error:
+        location = ".".join(str(part) for part in error.absolute_path) or "plan"
+        raise PlanError(f"{location}: {error.message}") from error
     if not isinstance(data, dict):
-        raise PlanError("plan must be a JSON object")
+        raise PlanError("plan must be a mapping")
     if type(data.get("version")) is not int or data["version"] != 1:
         raise PlanError("unsupported plan version; expected version 1")
     source = data.get("source")
     if not isinstance(source, str) or not source.strip():
         raise PlanError("plan source must name one recording file")
+    source_path = Path(source)
+    if not source_path.is_absolute():
+        source_path = path.parent / source_path
     if data.get("tail_policy") != "discard":
         raise PlanError("tail_policy must be 'discard'")
     raw_segments = data.get("segments")
     if not isinstance(raw_segments, list) or not raw_segments:
         raise PlanError("plan must contain source-order segments")
+    has_frames = any(
+        isinstance(raw, dict) and isinstance(raw.get(key), str) and raw[key].count(":") == 3
+        for raw in raw_segments for key in ("source_start", "source_end")
+    )
+    frame_rate = probe_frame_rate(source_path) if has_frames else None
 
     segments: list[Segment] = []
     previous_end = Decimal(0)
@@ -86,8 +148,8 @@ def load_plan(path: Path) -> tuple[Path, list[Segment], Path | None, int | None]
         label = f"segment {number}"
         if not isinstance(raw, dict):
             raise PlanError(f"{label} must be an object")
-        start = seconds(raw.get("source_start"), f"{label} source_start")
-        end = seconds(raw.get("source_end"), f"{label} source_end")
+        start = position_seconds(raw.get("source_start"), f"{label} source_start", frame_rate)
+        end = position_seconds(raw.get("source_end"), f"{label} source_end", frame_rate)
         if start != previous_end:
             raise PlanError(f"{label} must start at {previous_end} seconds to keep source-order contiguous intervals")
         if end <= start:
@@ -134,9 +196,6 @@ def load_plan(path: Path) -> tuple[Path, list[Segment], Path | None, int | None]
     audio_file = data.get("audio_file")
     if audio_file is not None and (not isinstance(audio_file, str) or not audio_file.strip()):
         raise PlanError("audio_file must name one audio file")
-    source_path = Path(source)
-    if not source_path.is_absolute():
-        source_path = path.parent / source_path
     audio_path = None
     if audio_file is not None:
         audio_path = Path(audio_file)
@@ -397,7 +456,7 @@ def project_xml(segments: list[Segment], recording: Recording, external_audio: E
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("plan", type=Path, help="Saved JSON edit plan")
+    parser.add_argument("plan", type=Path, help="Saved YAML edit plan")
     parser.add_argument("--project", type=Path, help="Output MLT project (default: plan stem + .mlt)")
     parser.add_argument("--replace", action="store_true", help="Replace an existing MLT project")
     args = parser.parse_args()

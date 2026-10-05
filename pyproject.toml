@@ -2,14 +2,19 @@
 name = "mlt-edit"
 version = "0.1.0"
 requires-python = ">=3.11"
-dependencies = []
+dependencies = [
+    "jsonschema>=4.26.0",
+    "pyyaml>=6.0.3",
+]
 
 [tool.mypy]
 python_version = "3.11"
-files = ["csv_to_json.py", "json_to_mlt.py", "render_mlt.py", "tests"]
+files = ["csv_to_yaml.py", "yaml_to_mlt.py", "render_mlt.py", "tests"]
 check_untyped_defs = true
 
 [dependency-groups]
 dev = [
     "mypy>=2.3.1",
+    "types-jsonschema>=4.26.0.20260518",
+    "types-pyyaml>=6.0.12.20260906",
 ]

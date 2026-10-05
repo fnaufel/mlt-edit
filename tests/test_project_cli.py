@@ -1,4 +1,3 @@
-import json
 import subprocess
 import sys
 import tempfile
@@ -6,9 +5,11 @@ import unittest
 from pathlib import Path
 from xml.etree import ElementTree as ET
 
+import yaml
+
 
 ROOT = Path(__file__).resolve().parents[1]
-SCRIPT = ROOT / "json_to_mlt.py"
+SCRIPT = ROOT / "yaml_to_mlt.py"
 
 
 class ProjectCliTests(unittest.TestCase):
@@ -17,7 +18,7 @@ class ProjectCliTests(unittest.TestCase):
         self.addCleanup(self.directory.cleanup)
         self.root = Path(self.directory.name)
         self.source = self.root / "corrected source.mkv"
-        self.plan_path = self.root / "edit.plan.json"
+        self.plan_path = self.root / "edit.plan.yaml"
         self.project = self.root / "edit.mlt"
 
     def make_media(self):
@@ -49,7 +50,7 @@ class ProjectCliTests(unittest.TestCase):
             "annotations": [],
         }
         plan.update(changes)
-        self.plan_path.write_text(json.dumps(plan), encoding="utf-8")
+        self.plan_path.write_text(yaml.safe_dump(plan), encoding="utf-8")
 
     def generate(self, *args):
         return subprocess.run(
@@ -95,6 +96,25 @@ class ProjectCliTests(unittest.TestCase):
                    for index in (0, 5, 6, 11)]
         self.assertTrue(all(color[0] > 200 and color[1] < 50 for color in centers[:2]), centers)
         self.assertTrue(all(color[2] > 200 and color[1] < 50 for color in centers[2:]), centers)
+
+    def test_timecode_frame_suffix_sets_rendered_boundaries(self):
+        self.make_media()
+        self.save_plan([
+            {"source_start": "00:00:00:00", "source_end": "00:00:00:02", "keep": False},
+            {"source_start": "00:00:00:02", "source_end": "00:00:00:08", "keep": True, "join_after": "cut"},
+        ])
+        generated = self.generate()
+        self.assertEqual(generated.returncode, 0, generated.stderr)
+        self.assertEqual(
+            [(entry.attrib["in"], entry.attrib["out"]) for entry in ET.parse(self.project).findall("./playlist/entry")],
+            [("2", "7")],
+        )
+        self.save_plan([
+            {"source_start": "00:00:00:00", "source_end": "00:00:00:10", "keep": True, "join_after": "cut"},
+        ])
+        invalid = self.generate()
+        self.assertNotEqual(invalid.returncode, 0)
+        self.assertIn("frame number", invalid.stderr)
 
     def test_audio_file_path_can_be_corrected_after_move(self):
         self.make_media()
@@ -186,7 +206,7 @@ class ProjectCliTests(unittest.TestCase):
             (dict(source=[self.source.name]), [kept], "source"),
             ({}, [{**kept, "source_start": 0.1}], "segment 1"),
             ({}, [kept, {**kept, "source_start": 1.1, "source_end": 2}], "segment 2"),
-            ({}, [{**kept, "source_end": 0}], "positive duration"),
+            ({}, [{**kept, "source_end": 0}], "source_end"),
             ({}, [{**kept, "join_after": "wipe"}], "join_after"),
             ({}, [{**kept, "keep": False, "join_after": None}], "no kept segments"),
             ({}, [{**kept, "join_after": "dissolve"}], "transition"),
@@ -194,6 +214,18 @@ class ProjectCliTests(unittest.TestCase):
         for changes, segments, message in cases:
             with self.subTest(message=message):
                 self.save_plan(segments, **changes)
+                result = self.generate()
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(message, result.stderr)
+                self.assertFalse(self.project.exists())
+
+    def test_yaml_syntax_and_schema_errors_leave_no_project(self):
+        for content, message in [
+            ("segments: [\n", "cannot read plan"),
+            ("version: 1\nsource: recording.mkv\ntail_policy: discard\nsegments:\n  - source_start: 0\n    source_end: 1\n    keep: maybe\nannotations: []\n", "keep"),
+        ]:
+            with self.subTest(message=message):
+                self.plan_path.write_text(content)
                 result = self.generate()
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn(message, result.stderr)
@@ -217,7 +249,7 @@ class ProjectCliTests(unittest.TestCase):
             ([{**first, "transition_duration": 0.25},
               {"source_start": 1, "source_end": 1.6, "keep": True, "join_after": "dissolve", "transition_duration": 0.35},
               {"source_start": 1.6, "source_end": 3, "keep": True, "join_after": "cut"}], "after frame quantization"),
-            ([{**first, "transition_duration": 0}, second], "transition_duration must be positive"),
+            ([{**first, "transition_duration": 0}, second], "transition_duration"),
             ([{**first, "transition_duration": 0.01}, second], "at least one frame"),
             ([{key: value for key, value in first.items() if key != "transition_duration"}, second], "transition_duration"),
         ]

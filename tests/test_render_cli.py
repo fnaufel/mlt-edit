@@ -8,9 +8,11 @@ import unittest
 from pathlib import Path
 from xml.etree import ElementTree as ET
 
+import yaml
+
 
 ROOT = Path(__file__).resolve().parents[1]
-PROJECT_SCRIPT = ROOT / "json_to_mlt.py"
+PROJECT_SCRIPT = ROOT / "yaml_to_mlt.py"
 RENDER_SCRIPT = ROOT / "render_mlt.py"
 
 
@@ -20,7 +22,7 @@ class RenderCliTests(unittest.TestCase):
         self.addCleanup(self.directory.cleanup)
         self.root = Path(self.directory.name)
         self.source = self.root / "source.mkv"
-        self.plan = self.root / "edit.plan.json"
+        self.plan = self.root / "edit.plan.yaml"
         self.project = self.root / "edit.mlt"
         self.output = self.root / "edit.mp4"
 
@@ -77,7 +79,7 @@ class RenderCliTests(unittest.TestCase):
             plan["audio_stream"] = audio_stream
         if audio_file is not None:
             plan["audio_file"] = audio_file
-        self.plan.write_text(json.dumps(plan), encoding="utf-8")
+        self.plan.write_text(yaml.safe_dump(plan), encoding="utf-8")
         generated = subprocess.run([sys.executable, str(PROJECT_SCRIPT), str(self.plan)], capture_output=True, text=True)
         self.assertEqual(generated.returncode, 0, generated.stderr)
         return generated

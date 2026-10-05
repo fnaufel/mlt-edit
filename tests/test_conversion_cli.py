@@ -6,9 +6,12 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import jsonschema
+import yaml
+
 
 ROOT = Path(__file__).resolve().parents[1]
-SCRIPT = ROOT / "csv_to_json.py"
+SCRIPT = ROOT / "csv_to_yaml.py"
 CONFIG = ROOT / "edit-config.toml"
 
 
@@ -51,15 +54,31 @@ class ConversionCliTests(unittest.TestCase):
         result = self.convert()
 
         self.assertEqual(result.returncode, 0, result.stderr)
-        plan = json.loads((self.root / "markers.plan.json").read_text())
+        plan = yaml.safe_load((self.root / "markers.plan.yaml").read_text())
         self.assertEqual(plan["version"], 1)
         self.assertEqual(plan["source"], "recording.mkv")
         self.assertEqual(
             [(segment["source_start"], segment["source_end"], segment["keep"]) for segment in plan["segments"]],
-            [(0, 2, True), (2, 4, False), (4, 6, True)],
+            [("00:00:00", "00:00:02", True), ("00:00:02", "00:00:04", False), ("00:00:04", "00:00:06", True)],
         )
         self.assertEqual(plan["segments"][0]["join_after"], "dissolve")
         self.assertEqual(plan["segments"][0]["transition_duration"], 0.5)
+        self.assertFalse((self.root / "markers.plan.json").exists())
+        plan_text = (self.root / "markers.plan.yaml").read_text()
+        self.assertIn('source_end: "00:00:02"', plan_text)
+        self.assertNotIn("source_end_timecode", plan_text)
+        first_line = plan_text.splitlines()[0]
+        schema_reference = first_line.removeprefix("# yaml-language-server: $schema=")
+        schema_path = (self.root / schema_reference).resolve()
+        self.assertEqual(schema_path, ROOT / "edit-plan.schema.json")
+        schema = json.loads(schema_path.read_text())
+        jsonschema.validate(plan, schema)
+        plan["segments"][0]["source_start"] = "00:00:00:00"
+        plan["segments"][0]["source_end"] = "00:00:02:12"
+        jsonschema.validate(plan, schema)
+        plan["segments"][0]["source_end"] = "00:00:99:12"
+        with self.assertRaises(jsonschema.ValidationError):
+            jsonschema.validate(plan, schema)
         self.assertFalse((self.root / "markers.mlt").exists())
         self.assertFalse((self.root / "markers.mp4").exists())
 
@@ -70,22 +89,22 @@ class ConversionCliTests(unittest.TestCase):
 
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertFalse(self.source.exists())
-        plan = json.loads((self.root / "markers.plan.json").read_text())
+        plan = yaml.safe_load((self.root / "markers.plan.yaml").read_text())
         self.assertEqual(
             [(segment["source_start"], segment["source_end"], segment["keep"]) for segment in plan["segments"]],
-            [(0, 3, False), (3, 7, False)],
+            [("00:00:00", "00:00:03", False), ("00:00:03", "00:00:07", False)],
         )
         self.assertEqual(plan["tail_policy"], "discard")
 
     def test_source_reference_is_relative_to_custom_plan_location(self):
         self.write_csv([("00:00:03", "KEEP_CUT")])
-        plan_path = self.root / "plans" / "editable.json"
+        plan_path = self.root / "plans" / "editable.yaml"
         plan_path.parent.mkdir()
 
         result = self.convert("--plan", str(plan_path))
 
         self.assertEqual(result.returncode, 0, result.stderr)
-        plan = json.loads(plan_path.read_text())
+        plan = yaml.safe_load(plan_path.read_text())
         self.assertEqual(plan["source"], "../recording.mkv")
 
     def test_configured_transition_duration_is_saved_in_plan(self):
@@ -98,24 +117,24 @@ class ConversionCliTests(unittest.TestCase):
         result = self.convert("-c", str(config_path))
 
         self.assertEqual(result.returncode, 0, result.stderr)
-        plan = json.loads((self.root / "markers.plan.json").read_text())
+        plan = yaml.safe_load((self.root / "markers.plan.yaml").read_text())
         self.assertEqual(plan["segments"][0]["transition_duration"], 1.25)
 
     def test_existing_hand_edits_require_explicit_replacement(self):
         self.write_csv([("00:00:03", "KEEP_CUT")])
-        plan_path = self.root / "markers.plan.json"
-        plan_path.write_text('{"hand_edited": true}\n')
+        plan_path = self.root / "markers.plan.yaml"
+        plan_path.write_text("hand_edited: true\n")
 
         refused = self.convert()
 
         self.assertNotEqual(refused.returncode, 0)
         self.assertIn("--replace", refused.stderr)
-        self.assertEqual(plan_path.read_text(), '{"hand_edited": true}\n')
+        self.assertEqual(plan_path.read_text(), "hand_edited: true\n")
 
         replaced = self.convert("--replace")
 
         self.assertEqual(replaced.returncode, 0, replaced.stderr)
-        self.assertEqual(json.loads(plan_path.read_text())["version"], 1)
+        self.assertEqual(yaml.safe_load(plan_path.read_text())["version"], 1)
 
     def test_unknown_marker_reports_its_csv_row(self):
         self.write_csv([("00:00:02", "KEEP_CUT"), ("00:00:03", "UNRELATED")])
@@ -126,7 +145,7 @@ class ConversionCliTests(unittest.TestCase):
         self.assertIn("UNRELATED", result.stderr)
         self.assertIn("row 3", result.stderr)
         self.assertNotIn("Traceback", result.stderr)
-        self.assertFalse((self.root / "markers.plan.json").exists())
+        self.assertFalse((self.root / "markers.plan.yaml").exists())
 
     def test_empty_marker_comment_reports_its_csv_row(self):
         self.write_csv([("00:00:02", "")])
@@ -159,10 +178,10 @@ class ConversionCliTests(unittest.TestCase):
         result = self.convert("-c", str(config_path))
 
         self.assertEqual(result.returncode, 0, result.stderr)
-        plan = json.loads((self.root / "markers.plan.json").read_text())
+        plan = yaml.safe_load((self.root / "markers.plan.yaml").read_text())
         self.assertEqual(
             [(segment["source_start"], segment["source_end"]) for segment in plan["segments"]],
-            [(0, 2), (2, 4)],
+            [("00:00:00", "00:00:02"), ("00:00:02", "00:00:04")],
         )
         self.assertEqual(plan["annotations"], [])
 
@@ -174,7 +193,7 @@ class ConversionCliTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("row 3", result.stderr)
         self.assertIn("timestamp", result.stderr.lower())
-        self.assertFalse((self.root / "markers.plan.json").exists())
+        self.assertFalse((self.root / "markers.plan.yaml").exists())
 
     def test_two_boundaries_in_same_second_report_csv_row(self):
         self.write_csv([
@@ -188,7 +207,7 @@ class ConversionCliTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("row 4", result.stderr)
         self.assertIn("boundary", result.stderr.lower())
-        self.assertFalse((self.root / "markers.plan.json").exists())
+        self.assertFalse((self.root / "markers.plan.yaml").exists())
 
     def test_annotations_in_discarded_footage_keep_source_coordinates(self):
         self.write_csv([
@@ -201,14 +220,14 @@ class ConversionCliTests(unittest.TestCase):
         result = self.convert()
 
         self.assertEqual(result.returncode, 0, result.stderr)
-        plan = json.loads((self.root / "markers.plan.json").read_text())
+        plan = yaml.safe_load((self.root / "markers.plan.yaml").read_text())
         self.assertEqual(
             [(segment["source_start"], segment["source_end"], segment["keep"]) for segment in plan["segments"]],
-            [(0, 2, True), (2, 6, False)],
+            [("00:00:00", "00:00:02", True), ("00:00:02", "00:00:06", False)],
         )
         self.assertEqual(
             [(item["kind"], item["time"], item.get("end")) for item in plan["annotations"]],
-            [("point", 3, None), ("range", 4, 5)],
+            [("point", "00:00:03", None), ("range", "00:00:04", "00:00:05")],
         )
         self.assertIn("annotations", result.stdout.lower())
         self.assertIn("not rendered", result.stdout.lower())
@@ -221,7 +240,7 @@ class ConversionCliTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("row 2", result.stderr)
         self.assertIn("range", result.stderr.lower())
-        self.assertFalse((self.root / "markers.plan.json").exists())
+        self.assertFalse((self.root / "markers.plan.yaml").exists())
 
     def test_incomplete_range_is_preserved_and_warned(self):
         self.write_csv([("00:00:02", "KEEP_CUT"), ("00:00:03", "IMPORTANT")])
@@ -229,9 +248,9 @@ class ConversionCliTests(unittest.TestCase):
         result = self.convert()
 
         self.assertEqual(result.returncode, 0, result.stderr)
-        plan = json.loads((self.root / "markers.plan.json").read_text())
+        plan = yaml.safe_load((self.root / "markers.plan.yaml").read_text())
         self.assertEqual(len(plan["annotations"]), 1)
-        self.assertEqual(plan["annotations"][0]["time"], 3)
+        self.assertEqual(plan["annotations"][0]["time"], "00:00:03")
         self.assertNotIn("end", plan["annotations"][0])
         self.assertIn("row 3", result.stderr)
         self.assertIn("incomplete", result.stderr.lower())
