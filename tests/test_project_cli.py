@@ -24,6 +24,7 @@ class ProjectCliTests(unittest.TestCase):
         self.source = self.root / "corrected source.mkv"
         self.plan_path = self.root / "edit.plan.yaml"
         self.project = self.root / "edit.mlt"
+        self.preview_project = self.root / "edit-preview.mlt"
 
     def make_media(self):
         command = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y"]
@@ -74,7 +75,18 @@ class ProjectCliTests(unittest.TestCase):
         result = self.generate()
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertTrue(self.project.exists())
+        self.assertTrue(self.preview_project.exists())
         xml = ET.parse(self.project)
+        self.assertEqual(xml.findall(".//filter"), [])
+        preview = ET.parse(self.preview_project)
+        source_filters = preview.findall("./producer[@id='source']/filter")
+        output_filters = preview.findall("./tractor[@id='project']/filter")
+        self.assertEqual([effect.get("mlt_service") for effect in source_filters], ["timer"])
+        self.assertEqual([effect.get("mlt_service") for effect in output_filters], ["dynamictext", "dynamictext", "timer"])
+        arguments = [effect.findtext("./property[@name='argument']") for effect in output_filters[:2]]
+        self.assertEqual(arguments, ["SOURCE", "EDIT"])
+        self.assertEqual(source_filters[0].findtext("./property[@name='format']"), "HH:MM:SS.S")
+        self.assertNotIn("#frame#", self.preview_project.read_text())
         profile = xml.find("profile")
         assert profile is not None
         self.assertEqual(profile.attrib["frame_rate_num"], "10")
@@ -289,13 +301,34 @@ class ProjectCliTests(unittest.TestCase):
         self.save_plan([{"source_start": 0, "source_end": 1, "keep": True, "join_after": "cut"}])
         self.assertEqual(self.generate().returncode, 0)
         original = self.project.read_bytes()
+        original_preview = self.preview_project.read_bytes()
         self.save_plan([{"source_start": 0, "source_end": 2, "keep": True, "join_after": "cut"}])
         refused = self.generate()
         self.assertNotEqual(refused.returncode, 0)
         self.assertIn("--replace", refused.stderr)
         self.assertEqual(self.project.read_bytes(), original)
+        self.assertEqual(self.preview_project.read_bytes(), original_preview)
         self.assertEqual(self.generate("--replace").returncode, 0)
         self.assertNotEqual(self.project.read_bytes(), original)
+        self.assertNotEqual(self.preview_project.read_bytes(), original_preview)
+
+    def test_existing_preview_does_not_leave_a_production_project(self):
+        self.make_media()
+        self.save_plan([{"source_start": 0, "source_end": 1, "keep": True, "join_after": "cut"}])
+        self.preview_project.write_text("hand edited preview")
+        refused = self.generate()
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertIn("--replace", refused.stderr)
+        self.assertFalse(self.project.exists())
+        self.assertEqual(self.preview_project.read_text(), "hand edited preview")
+
+    def test_production_and_preview_paths_must_differ(self):
+        self.make_media()
+        self.save_plan([{"source_start": 0, "source_end": 1, "keep": True, "join_after": "cut"}])
+        refused = self.generate("--preview-project", str(self.project))
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertIn("must differ", refused.stderr)
+        self.assertFalse(self.project.exists())
 
     def test_discarded_interval_beyond_recording_after_last_kept_is_ignored(self):
         self.make_media()
@@ -354,8 +387,7 @@ class ProjectCliTests(unittest.TestCase):
         ):
             with self.subTest(segments=segments):
                 self.save_plan(segments)
-                self.project.unlink(missing_ok=True)
-                result = self.generate()
+                result = self.generate("--replace")
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertTrue(self.project.exists())
 

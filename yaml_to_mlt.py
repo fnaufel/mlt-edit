@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
 import re
 import subprocess
 import sys
@@ -488,13 +489,90 @@ def project_xml(segments: list[Segment], recording: Recording, external_audio: E
     return ET.tostring(mlt, encoding="utf-8", xml_declaration=True) + b"\n"
 
 
+def preview_xml(project: bytes, recording: Recording) -> bytes:
+    mlt = ET.fromstring(project)
+    source = mlt.find("./producer[@id='source']")
+    tractor = mlt.find("./tractor[@id='project']")
+    assert source is not None and tractor is not None
+
+    def add_filter(parent: ET.Element, service: str, properties: dict[str, str]) -> None:
+        effect = ET.SubElement(parent, "filter", {"mlt_service": service})
+        for name, value in properties.items():
+            ET.SubElement(effect, "property", {"name": name}).text = value
+
+    def duration(frames: int) -> str:
+        total_seconds = math.ceil(Fraction(frames, 1) / recording.frame_rate) + 1
+        hours, remainder = divmod(total_seconds, 3600)
+        minutes, seconds = divmod(remainder, 60)
+        return f"{hours:02d}:{minutes:02d}:{seconds:02d}.000"
+
+    source_size = str(max(18, round(recording.height / 30)))
+    edit_size = str(max(14, round(recording.height / 40)))
+    common = {"fgcolour": "white", "bgcolour": "0x00000080", "pad": "6", "halign": "left", "valign": "top"}
+    add_filter(source, "timer", {
+        **common, "format": "HH:MM:SS.S", "direction": "up",
+        "duration": duration(recording.frame_count), "size": source_size,
+        "geometry": "2%/7%:55%x8%",
+    })
+    add_filter(tractor, "dynamictext", {
+        **common, "argument": "SOURCE", "size": source_size,
+        "geometry": "2%/2%:55%x8%",
+    })
+    add_filter(tractor, "dynamictext", {
+        **common, "argument": "EDIT", "size": edit_size,
+        "geometry": "62%/2%:36%x8%",
+    })
+    add_filter(tractor, "timer", {
+        **common, "format": "HH:MM:SS.S", "direction": "up",
+        "duration": duration(int(tractor.attrib["out"]) + 1), "size": edit_size,
+        "geometry": "62%/7%:36%x8%",
+    })
+    ET.indent(mlt)
+    return ET.tostring(mlt, encoding="utf-8", xml_declaration=True) + b"\n"
+
+
+def write_projects(outputs: list[tuple[Path, bytes]], replace: bool) -> None:
+    if outputs[0][0].resolve() == outputs[1][0].resolve():
+        raise PlanError("production and preview project paths must differ")
+    if not replace:
+        for path, _ in outputs:
+            if path.exists():
+                raise PlanError(f"project already exists: {path}; use --replace to overwrite it")
+    staged: list[Path] = []
+    created: list[Path] = []
+    try:
+        for path, data in outputs:
+            with tempfile.NamedTemporaryFile(dir=path.parent, prefix=f".{path.stem}-", suffix=".mlt", delete=False) as file:
+                staged.append(Path(file.name))
+                file.write(data)
+        for (path, _), temporary in zip(outputs, staged):
+            if replace:
+                temporary.replace(path)
+            else:
+                os.link(temporary, path)
+                created.append(path)
+    except FileExistsError as error:
+        for path in created:
+            path.unlink(missing_ok=True)
+        raise PlanError(f"project already exists: {error.filename2 or error.filename}; use --replace to overwrite it") from error
+    except OSError as error:
+        for path in created:
+            path.unlink(missing_ok=True)
+        raise PlanError(f"cannot write MLT projects: {error}") from error
+    finally:
+        for path in staged:
+            path.unlink(missing_ok=True)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("plan", type=Path, help="Saved YAML edit plan")
     parser.add_argument("--project", type=Path, help="Output MLT project (default: plan stem + .mlt)")
-    parser.add_argument("--replace", action="store_true", help="Replace an existing MLT project")
+    parser.add_argument("--preview-project", type=Path, help="Output preview MLT project (default: project stem + -preview.mlt)")
+    parser.add_argument("--replace", action="store_true", help="Replace existing production and preview MLT projects")
     args = parser.parse_args()
     project = args.project or args.plan.with_suffix("").with_suffix(".mlt")
+    preview_project = args.preview_project or project.with_name(f"{project.stem}-preview.mlt")
     try:
         print("Loading edit plan...", file=sys.stderr, flush=True)
         source, segments, audio_file, selected_audio = load_plan(args.plan)
@@ -507,14 +585,13 @@ def main() -> None:
         external_audio = probe_external_audio(audio_file, selected_audio) if audio_file else None
         print("Building MLT project...", file=sys.stderr, flush=True)
         xml = project_xml(segments, recording, external_audio)
-        print("Writing MLT project...", file=sys.stderr, flush=True)
-        with project.open("wb" if args.replace else "xb") as file:
-            file.write(xml)
-    except FileExistsError:
-        parser.error(f"project already exists: {project}; use --replace to overwrite it")
+        preview = preview_xml(xml, recording)
+        print("Writing MLT projects...", file=sys.stderr, flush=True)
+        write_projects([(project, xml), (preview_project, preview)], args.replace)
     except PlanError as error:
         parser.error(str(error))
     print(f"project: {project}")
+    print(f"preview: {preview_project}")
     if recording.audio_index < 0 and external_audio is None and any(segment.join_after == "dissolve" for segment in segments):
         print("warning: no audio source selected; no audio crossfade is possible", file=sys.stderr)
     print(f"source: {source}")

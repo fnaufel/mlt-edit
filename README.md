@@ -1,6 +1,6 @@
 # MLT edit plans
 
-Convert one OBS marker CSV to an editable plan, generate an MLT project from the saved plan, then explicitly render that project to MP4.
+Convert one OBS marker CSV to an editable plan, generate production and preview MLT projects from the saved plan, then explicitly render the production project to MP4.
 
 Python 3.11 or later, `ffprobe`, and `melt` are required. Install the Python dependencies with `uv sync`. The CLI tests also use `ffmpeg` to generate fixtures.
 
@@ -24,13 +24,13 @@ The plugin writes the marker CSV to its Output Folder. Footage after the last bo
 uv run python csv_to_yaml.py markers.csv -c edit-config.toml
 ```
 
-### Convert the edit plan to an MLT project file
+### Convert the edit plan to MLT project files
 
 ```bash
 uv run python yaml_to_mlt.py markers.plan.yaml
 ```
 
-This command reads only the YAML plan. If desired, edit its `source` path, `keep` decisions, and `source_start` or `source_end` values before generating the project.
+This command reads only the YAML plan and writes `markers.mlt` for rendering and `markers-preview.mlt` for inspecting cuts. If desired, edit its `source` path, `keep` decisions, and `source_start` or `source_end` values before generating the projects.
 
 ### Run from a recording directory
 
@@ -60,21 +60,23 @@ The source path is resolved relative to the plan. The generator checks the sourc
 
 When a source has multiple audio streams, set `audio_stream` in the plan to the desired stream index reported by `ffprobe`; a source without audio generates a silent project.
 
-The project defaults to the plan's basename with `.mlt` and is protected from replacement. Use `--project path/to/output.mlt` to choose a path and `--replace` to replace an existing project.
+The production project defaults to the plan's basename with `.mlt`; the preview project adds `-preview` to that name. Use `--project path/to/output.mlt` or `--preview-project path/to/preview.mlt` to choose paths. Neither project is replaced unless you pass `--replace`.
 
 To replace OBS audio, add `audio_file: media/replacement.wav` to the hand-edited plan. The path is resolved relative to the plan, so it can be updated if the file moves. Its time zero aligns with the recording's time zero, and only the audio within kept source intervals is used. OBS audio is muted. If the external file has multiple audio streams, set `audio_stream` to the desired stream index in that file; otherwise the sole stream is selected automatically. The generator rejects a missing file, a file without audio, or a kept interval longer than the selected stream. Omit `audio_file` to retain OBS stream selection or silent-video behavior.
 
-### Preview the project (optional)
+### Preview and refine the plan (optional)
 
-The MLT project uses the recording's detected profile. This command opens Melt's interactive preview:
+Both MLT projects use the recording's detected profile. The preview shows a prominent SOURCE clock in the original recording's elapsed time and a smaller EDIT clock in the resulting timeline's elapsed time. Both display `HH:MM:SS.S`, matching the plan's elapsed-time coordinates without an absolute frame count. After a deleted interval, SOURCE jumps while EDIT continues. During a dissolve, the two source clock images overlap because both source frames are visible. Open Melt's interactive preview with:
 
 ```bash
-melt markers.mlt
+melt markers-preview.mlt
 ```
+
+When a boundary needs adjustment, change the shared `source_end` and next `source_start` value in `markers.plan.yaml`, then regenerate both projects with `uv run python yaml_to_mlt.py markers.plan.yaml --replace` and preview again. This displays tenths of a second; use a numeric fractional-second value in the YAML for finer adjustments. Interactive playback does not encode an output video.
 
 ### Render the project
 
-Project generation never starts an MP4 encode. The render command requires an `audio_index` on each source producer so that it cannot choose a source audio stream implicitly. It defaults to `markers.mp4` beside `markers.mlt`, H.264 video (`libx264`, CRF 23, medium preset), and AAC audio at 192k when the project has audio.
+Project generation never starts an MP4 encode. Render `markers.mlt` to keep the preview clocks out of the final video. The render command requires an `audio_index` on each source producer so that it cannot choose a source audio stream implicitly. It defaults to `markers.mp4` beside `markers.mlt`, H.264 video (`libx264`, CRF 23, medium preset), and AAC audio at 192k when the project has audio.
 
 It refuses to overwrite an existing MP4; use `--replace` to request replacement. A failed render leaves any existing MP4 intact. The project remains separately protected by `yaml_to_mlt.py --replace`.
 
