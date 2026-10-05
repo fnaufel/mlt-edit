@@ -1,11 +1,15 @@
+import io
 import subprocess
 import sys
 import tempfile
 import unittest
+from contextlib import redirect_stderr
 from pathlib import Path
+from unittest.mock import patch
 from xml.etree import ElementTree as ET
 
 import yaml
+import yaml_to_mlt
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -310,6 +314,14 @@ class ProjectCliTests(unittest.TestCase):
             {"source_start": 0, "source_end": 1, "keep": True, "join_after": "cut"},
             {"source_start": 1, "source_end": 4, "keep": True, "join_after": "cut"},
         ])
+        errors = io.StringIO()
+        with patch.object(yaml_to_mlt, "probe_frame_times", side_effect=AssertionError("frame scan started")):
+            with patch.object(sys, "argv", [str(SCRIPT), str(self.plan_path)]):
+                with redirect_stderr(errors):
+                    with self.assertRaises(SystemExit) as stopped:
+                        yaml_to_mlt.main()
+        self.assertEqual(stopped.exception.code, 2)
+        self.assertIn("segment 2 ends at 4 seconds", errors.getvalue())
         result = self.generate()
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("segment 2", result.stderr)

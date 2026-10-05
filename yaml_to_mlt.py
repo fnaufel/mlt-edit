@@ -207,7 +207,7 @@ def load_plan(path: Path) -> tuple[Path, list[Segment], Path | None, int | None]
     return source_path.resolve(), segments, audio_path, audio_index
 
 
-def probe_recording(path: Path, selected_audio: int | None, required_through: Decimal,
+def probe_recording(path: Path, selected_audio: int | None, required_through: Decimal, required_segment: int,
                     external_audio: bool = False) -> Recording:
     if not path.is_file():
         raise PlanError(f"source recording does not exist: {path}; correct plan source")
@@ -241,6 +241,11 @@ def probe_recording(path: Path, selected_audio: int | None, required_through: De
         raise PlanError(f"source recording has invalid frame rate, resolution, or duration: {error}") from error
     if rate <= 0 or width <= 0 or height <= 0 or not duration.is_finite() or duration <= 0 or sample_aspect <= 0:
         raise PlanError("source recording has invalid frame rate, resolution, or duration")
+    if required_through > duration:
+        raise PlanError(
+            f"segment {required_segment} ends at {required_through} seconds, "
+            f"beyond source recording duration ({duration} seconds)"
+        )
 
     if external_audio:
         audio_index = -1
@@ -493,9 +498,10 @@ def main() -> None:
     try:
         print("Loading edit plan...", file=sys.stderr, flush=True)
         source, segments, audio_file, selected_audio = load_plan(args.plan)
-        last_kept_end = max(segment.end for segment in segments if segment.keep)
+        last_kept_number = max(number for number, segment in enumerate(segments, 1) if segment.keep)
+        last_kept_end = segments[last_kept_number - 1].end
         print("Inspecting recording...", file=sys.stderr, flush=True)
-        recording = probe_recording(source, selected_audio, last_kept_end, audio_file is not None)
+        recording = probe_recording(source, selected_audio, last_kept_end, last_kept_number, audio_file is not None)
         if audio_file:
             print("Inspecting external audio...", file=sys.stderr, flush=True)
         external_audio = probe_external_audio(audio_file, selected_audio) if audio_file else None
