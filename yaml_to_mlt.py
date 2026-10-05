@@ -9,6 +9,7 @@ import math
 import re
 import subprocess
 import sys
+import tempfile
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from fractions import Fraction
@@ -18,6 +19,7 @@ from xml.etree import ElementTree as ET
 
 import jsonschema
 import yaml
+from tqdm import tqdm
 
 
 SCHEMA_PATH = Path(__file__).with_name("edit-plan.schema.json")
@@ -251,7 +253,7 @@ def probe_recording(path: Path, selected_audio: int | None, required_through: De
             raise PlanError(f"audio_stream {selected_audio} is not an audio stream in the source recording")
         audio_index = selected_audio
 
-    timestamps = probe_frame_times(path, int(video["index"]))
+    timestamps = probe_frame_times(path, int(video["index"]), duration)
     if not timestamps:
         raise PlanError("source recording has no video frames")
     expected_step = Decimal(rate.denominator) / Decimal(rate.numerator)
@@ -309,21 +311,48 @@ def probe_external_audio(path: Path, selected_stream: int | None) -> ExternalAud
     return ExternalAudio(path, audio_index, duration)
 
 
-def probe_frame_times(path: Path, video_index: int) -> list[Decimal]:
+def probe_frame_times(path: Path, video_index: int, duration: Decimal) -> list[Decimal]:
     command = [
         "ffprobe", "-v", "error", "-select_streams", str(video_index),
         "-show_entries", "frame=best_effort_timestamp_time", "-of", "csv=p=0", str(path),
     ]
+    timestamps: list[Decimal] = []
+    invalid_timestamp = False
     try:
-        result = subprocess.run(command, text=True, capture_output=True, check=False)
+        with tempfile.TemporaryFile(mode="w+t") as errors:
+            with subprocess.Popen(command, text=True, stdout=subprocess.PIPE, stderr=errors) as process:
+                assert process.stdout is not None
+                total_seconds = float(duration)
+                scanned_seconds = 0.0
+                with tqdm(total=total_seconds, desc="Scanning video frames", unit="s",
+                          file=sys.stderr, disable=not sys.stderr.isatty()) as progress:
+                    for line in process.stdout:
+                        if not line.strip():
+                            continue
+                        try:
+                            timestamp = Decimal(line.split(",", 1)[0])
+                        except InvalidOperation:
+                            invalid_timestamp = True
+                            continue
+                        if not timestamp.is_finite():
+                            invalid_timestamp = True
+                            continue
+                        timestamps.append(timestamp)
+                        next_seconds = float(min(max(timestamp, Decimal(0)), duration))
+                        if next_seconds > scanned_seconds:
+                            progress.update(next_seconds - scanned_seconds)
+                            scanned_seconds = next_seconds
+                    returncode = process.wait()
+                    if returncode == 0 and timestamps and not invalid_timestamp:
+                        progress.update(total_seconds - scanned_seconds)
+            if returncode:
+                errors.seek(0)
+                raise PlanError(f"cannot inspect video frame times: {errors.read().strip()}")
     except OSError as error:
         raise PlanError(f"cannot run ffprobe: {error}") from error
-    if result.returncode:
-        raise PlanError(f"cannot inspect video frame times: {result.stderr.strip()}")
-    try:
-        return [Decimal(line.split(",", 1)[0]) for line in result.stdout.splitlines() if line.strip()]
-    except InvalidOperation as error:
-        raise PlanError("source recording has unreadable video frame times") from error
+    if invalid_timestamp:
+        raise PlanError("source recording has unreadable video frame times")
+    return timestamps
 
 
 def frame_at(value: Decimal, rate: Fraction) -> int:
@@ -462,11 +491,17 @@ def main() -> None:
     args = parser.parse_args()
     project = args.project or args.plan.with_suffix("").with_suffix(".mlt")
     try:
+        print("Loading edit plan...", file=sys.stderr, flush=True)
         source, segments, audio_file, selected_audio = load_plan(args.plan)
         last_kept_end = max(segment.end for segment in segments if segment.keep)
+        print("Inspecting recording...", file=sys.stderr, flush=True)
         recording = probe_recording(source, selected_audio, last_kept_end, audio_file is not None)
+        if audio_file:
+            print("Inspecting external audio...", file=sys.stderr, flush=True)
         external_audio = probe_external_audio(audio_file, selected_audio) if audio_file else None
+        print("Building MLT project...", file=sys.stderr, flush=True)
         xml = project_xml(segments, recording, external_audio)
+        print("Writing MLT project...", file=sys.stderr, flush=True)
         with project.open("wb" if args.replace else "xb") as file:
             file.write(xml)
     except FileExistsError:
