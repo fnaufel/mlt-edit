@@ -32,6 +32,18 @@ uv run python yaml_to_mlt.py markers.plan.yaml
 
 This command reads only the YAML plan. If desired, edit its `source` path, `keep` decisions, and `source_start` or `source_end` values before generating the project.
 
+### Run from a recording directory
+
+The launchers in `bin/` use this project's `.venv` and keep the current directory unchanged. Link them into a directory on your `PATH` (for example, `~/bin`), then run them beside the OBS CSV and recording:
+
+```bash
+mlt-edit-plan markers.csv
+mlt-edit-project markers.plan.yaml
+mlt-edit-render markers.mlt
+```
+
+`mlt-edit-plan` uses this repository's `edit-config.toml` by default. Pass `-c path/to/config.toml` to override it. Relative input and output paths are resolved from the directory where you invoke each command.
+
 The generated plan begins with a `# yaml-language-server: $schema=...` comment that points to [edit-plan.schema.json](edit-plan.schema.json). Install the Red Hat YAML extension in Positron to get validation and completion. The schema path is relative to the plan file. If you move the plan by itself, update that comment to point to the schema's new relative location.
 
 In the plan:

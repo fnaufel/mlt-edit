@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_dir=$(dirname "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")")
+exec "$repo_dir/.venv/bin/python" "$repo_dir/csv_to_yaml.py" -c "$repo_dir/edit-config.toml" "$@"
