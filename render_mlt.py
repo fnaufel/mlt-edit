@@ -83,7 +83,8 @@ def render(project: Path, output: Path, replace: bool, crf: int, preset: str, au
         print("Rendering MP4...", file=sys.stderr, flush=True)
         diagnostics = []
         progress_pattern = re.compile(r"Current Frame:\s*\d+,\s*percentage:\s*(\d+)")
-        with tqdm(total=100, desc="Encoding", unit="%", file=sys.stderr,
+        with tqdm(total=100, desc="Encoding", file=sys.stderr,
+                  bar_format="{l_bar}{bar}| elapsed {elapsed}, remaining ~{remaining}",
                   disable=not sys.stderr.isatty()) as progress:
             with subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                   text=True, errors="replace", bufsize=1) as process:

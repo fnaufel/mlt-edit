@@ -1,5 +1,6 @@
 import json
 import math
+import os
 import struct
 import subprocess
 import sys
@@ -86,6 +87,40 @@ class RenderCliTests(unittest.TestCase):
 
     def render(self, *args):
         return subprocess.run([sys.executable, str(RENDER_SCRIPT), str(self.project), *args], capture_output=True, text=True)
+
+    @unittest.skipUnless(os.name == "posix", "requires a terminal")
+    def test_terminal_progress_labels_elapsed_and_remaining_time(self):
+        import errno
+        import fcntl
+        import termios
+
+        self.make_project()
+        master, slave = os.openpty()
+        fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 80, 0, 0))
+        try:
+            with subprocess.Popen([sys.executable, str(RENDER_SCRIPT), str(self.project)],
+                                  stdout=subprocess.PIPE, stderr=slave) as process:
+                os.close(slave)
+                chunks = []
+                while True:
+                    try:
+                        chunk = os.read(master, 4096)
+                    except OSError as error:
+                        if error.errno == errno.EIO:
+                            break
+                        raise
+                    if not chunk:
+                        break
+                    chunks.append(chunk)
+                stdout = process.stdout.read() if process.stdout is not None else b""
+            terminal_output = b"".join(chunks)
+        finally:
+            os.close(master)
+        self.assertEqual(process.returncode, 0, terminal_output.decode(errors="replace"))
+        self.assertIn(b"MP4:", stdout)
+        self.assertIn(b"elapsed", terminal_output)
+        self.assertIn(b"remaining", terminal_output)
+        self.assertNotIn(b"s/%", terminal_output)
 
     def test_adjacent_obs_transition_dissolves_video_and_crossfades_audio(self):
         self.make_media()
