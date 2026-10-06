@@ -372,6 +372,8 @@ class RenderCliTests(unittest.TestCase):
         self.make_project()
         result = self.render("--crf", "20", "--preset", "fast", "--audio-bitrate", "128k")
         self.assertEqual(result.returncode, 0, result.stderr)
+        for message in ("Checking MLT project...", "Rendering MP4...", "Validating MP4...", "Saving MP4..."):
+            self.assertIn(message, result.stderr)
         probe = subprocess.run([
             "ffprobe", "-v", "error", "-show_streams", "-show_format", "-of", "json", str(self.output),
         ], capture_output=True, text=True, check=True)

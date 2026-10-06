@@ -6,11 +6,14 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
 from xml.etree import ElementTree as ET
+
+from tqdm import tqdm
 
 
 class RenderError(ValueError):
@@ -58,6 +61,7 @@ def render(project: Path, output: Path, replace: bool, crf: int, preset: str, au
         raise RenderError("MP4 output must differ from the MLT project")
     if (output.exists() or output.is_symlink()) and not replace:
         raise RenderError(f"MP4 already exists: {output}; use --replace to overwrite it")
+    print("Checking MLT project...", file=sys.stderr, flush=True)
     has_audio, has_dissolve = check_project(project)
     if has_dissolve and not has_audio:
         print("warning: no audio source selected; no audio crossfade is possible", file=sys.stderr)
@@ -70,31 +74,50 @@ def render(project: Path, output: Path, replace: bool, crf: int, preset: str, au
     temporary = Path(temporary_name)
     try:
         command = [
-            "melt", str(project), "-consumer", f"avformat:{temporary}",
+            "melt", str(project), "-progress", "-consumer", f"avformat:{temporary}",
             "vcodec=libx264", "pix_fmt=yuv420p", "acodec=aac", f"crf={crf}", f"preset={preset}",
             f"ab={audio_bitrate}", "movflags=+faststart", "real_time=-1",
         ]
         if not has_audio:
             command.append("an=1")
-        encoded = subprocess.run(command, capture_output=True, text=True)
-        if encoded.returncode:
-            raise RenderError(f"melt failed: {encoded.stderr.strip() or encoded.stdout.strip() or f'exit status {encoded.returncode}'}")
+        print("Rendering MP4...", file=sys.stderr, flush=True)
+        diagnostics = []
+        progress_pattern = re.compile(r"Current Frame:\s*\d+,\s*percentage:\s*(\d+)")
+        with tqdm(total=100, desc="Encoding", unit="%", file=sys.stderr,
+                  disable=not sys.stderr.isatty()) as progress:
+            with subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                  text=True, errors="replace", bufsize=1) as process:
+                assert process.stdout is not None
+                for line in process.stdout:
+                    message = line.strip()
+                    match = progress_pattern.fullmatch(message)
+                    if match:
+                        percentage = min(int(match.group(1)), 99)
+                        progress.update(max(0, percentage - progress.n))
+                    elif message:
+                        diagnostics.append(message)
+            if process.returncode:
+                raise RenderError(f"melt failed: {'; '.join(diagnostics) or f'exit status {process.returncode}'}")
+            progress.update(100 - progress.n)
+        melt_errors = "; ".join(diagnostics)
+        print("Validating MP4...", file=sys.stderr, flush=True)
         probed = subprocess.run([
             "ffprobe", "-v", "error", "-show_streams", "-show_format", "-of", "json", str(temporary),
         ], capture_output=True, text=True)
         if probed.returncode:
-            raise RenderError(f"encoded MP4 is invalid: {probed.stderr.strip() or 'ffprobe failed'}; melt: {encoded.stderr.strip()}")
+            raise RenderError(f"encoded MP4 is invalid: {probed.stderr.strip() or 'ffprobe failed'}; melt: {melt_errors}")
         media = json.loads(probed.stdout)
         streams = media.get("streams", [])
         if not any(stream.get("codec_type") == "video" and stream.get("codec_name") == "h264" for stream in streams):
-            raise RenderError(f"encoded MP4 has no H.264 video; melt: {encoded.stderr.strip()}")
+            raise RenderError(f"encoded MP4 has no H.264 video; melt: {melt_errors}")
         audio_streams = [stream for stream in streams if stream.get("codec_type") == "audio"]
         if has_audio and not any(stream.get("codec_name") == "aac" for stream in audio_streams):
-            raise RenderError(f"encoded MP4 has no AAC audio; melt: {encoded.stderr.strip()}")
+            raise RenderError(f"encoded MP4 has no AAC audio; melt: {melt_errors}")
         if not has_audio and audio_streams:
             raise RenderError("encoded MP4 unexpectedly has audio")
         if float(media.get("format", {}).get("duration", 0)) <= 0:
             raise RenderError("encoded MP4 has no duration")
+        print("Saving MP4...", file=sys.stderr, flush=True)
         if replace:
             temporary.replace(output)
         else:
